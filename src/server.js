@@ -11,6 +11,8 @@ const SNAPSHOT_FILE = join(DATA_DIR, "latest.json");
 const HISTORY_FILE = join(DATA_DIR, "delay-history.jsonl");
 const PACKAGE_FILE = join(ROOT, "package.json");
 const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || "0.0.0.0";
+const PUBLIC_BASE_URL = configuredBaseUrl(process.env.PUBLIC_BASE_URL);
 const SWU_BASE_URL = process.env.SWU_BASE_URL || "https://api.swu.de/mobility/v1";
 const SYNC_INTERVAL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 25_000;
@@ -374,9 +376,39 @@ const JSON_HEADERS = {
   "access-control-allow-origin": "*"
 };
 
+// Behind Cloudflare Tunnel (or any reverse proxy) the public hostname arrives in
+// X-Forwarded-Host and the client scheme in X-Forwarded-Proto, while Host carries
+// the origin hostname. Prefer the forwarded values so generated URLs stay public.
+function headerValue(request, name) {
+  const raw = request.headers[name];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return typeof value === "string" ? value.split(",")[0].trim() : "";
+}
+
+function configuredBaseUrl(value) {
+  if (!value) return "";
+  try {
+    return new URL(value.trim()).origin;
+  } catch {
+    console.error(`PUBLIC_BASE_URL ist ungültig und wird ignoriert: ${value}`);
+    return "";
+  }
+}
+
+function requestOrigin(request, requestUrl) {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
+  const host = headerValue(request, "x-forwarded-host") || headerValue(request, "host") || requestUrl.host || "localhost";
+  const forwardedProto = headerValue(request, "x-forwarded-proto").toLowerCase();
+  const scheme = forwardedProto === "https" || forwardedProto === "http"
+    ? forwardedProto
+    : requestUrl.protocol.replace(":", "") || "http";
+  return `${scheme}://${host}`;
+}
+
 function sendBuffer(response, status, body) {
   response.writeHead(status, { ...JSON_HEADERS, "content-length": body.length });
-  response.end(body);
+  // HEAD is answered like GET but without a payload, so health checks work.
+  response.end(response.req?.method === "HEAD" ? undefined : body);
 }
 
 function jsonResponse(response, status, value) {
@@ -389,21 +421,27 @@ function numberParam(url, name) {
 }
 
 async function handleRequest(request, response) {
-  if (request.method !== "GET") return jsonResponse(response, 405, { error: "Nur GET wird unterstützt." });
-  const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    response.setHeader("allow", "GET, HEAD");
+    return jsonResponse(response, 405, { error: "Nur GET und HEAD werden unterstützt." });
+  }
+  // request.url is origin-form behind a tunnel, so it never needs the Host header.
+  const url = new URL(request.url, "http://localhost");
   const path = url.pathname.replace(/\/+$/, "") || "/";
   const vehicleNumber = numberParam(url, "vehicleNumber");
   const routeNumber = numberParam(url, "routeNumber");
 
   if (path === "/") {
     const version = await getPackageVersion();
+    const origin = requestOrigin(request, url);
     return jsonResponse(response, 200, {
       name: "SWU ÖPNV-Datenserver",
       version,
       syncedAt: snapshot.syncedAt,
+      origin,
       routes: apiRoutes.map((route) => ({
         ...route,
-        url: new URL(route.path, url.origin).toString()
+        url: new URL(route.path, origin).toString()
       }))
     });
   }
@@ -534,8 +572,23 @@ async function start() {
       jsonResponse(response, 500, { error: "Interner Serverfehler." });
     });
   });
-  server.listen(PORT, () => console.log(`SWU-Datenserver läuft auf http://localhost:${PORT}`));
-  setInterval(() => syncData().catch((error) => console.error(`sync failed: ${error.message}`)), SYNC_INTERVAL_MS);
+  // Cloudflare Tunnel reuses origin connections, so keep them open longer than
+  // the proxy's idle timeout instead of letting Node drop them after 5 seconds.
+  server.keepAliveTimeout = 60_000;
+  server.headersTimeout = 66_000;
+  const syncTimer = setInterval(() => syncData().catch((error) => console.error(`sync failed: ${error.message}`)), SYNC_INTERVAL_MS);
+  // Service managers and containers stop the process with SIGTERM: finish
+  // in-flight requests and history writes before exiting.
+  const shutdown = (signal) => {
+    console.log(`${signal} empfangen, Server wird beendet.`);
+    clearInterval(syncTimer);
+    server.close(() => process.exit(0));
+    server.closeIdleConnections?.();
+    setTimeout(() => process.exit(0), 10_000).unref();
+  };
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => shutdown("SIGINT"));
+  server.listen(PORT, HOST, () => console.log(`SWU-Datenserver läuft auf http://${HOST}:${PORT}`));
   if (warmStart) {
     // Cached snapshot is already served; refresh it in the background.
     syncData().catch((error) => console.error(`sync failed: ${error.message}`));
