@@ -1,0 +1,14 @@
+{
+  "name": "swu-api-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lokaler Cache und Suchserver für die SWU ÖPNV API",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "sync": "node src/server.js --sync-only"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
