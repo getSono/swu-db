@@ -4,6 +4,9 @@ Der Server lädt die SWU-Daten beim Start und danach automatisch jede Minute.
 Der aktuelle Snapshot wird in `data/latest.json` gespeichert. Verspätungen aus
 den letzten 24 Stunden werden in `data/delay-history.jsonl` gesammelt.
 
+> [!CAUTION]
+> Momentan wird zum Testen in JSON gespeichert.
+
 ## Start
 
 Voraussetzung: Node.js 18 oder neuer.
