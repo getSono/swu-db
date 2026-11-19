@@ -1,0 +1,1321 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SWU Netzstatistik</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300..700&display=swap" rel="stylesheet">
+<style>
+  /* shadcn/ui design tokens (dark theme) */
+  :root {
+    color-scheme: dark;
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 5.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 5.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 12.5%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 17%;
+    --input: 240 3.7% 17%;
+    --ring: 217 91% 60%;
+    --chart-1: 217 91% 60%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 43 96% 56%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+    --radius: 0.75rem;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: "Outfit", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  header.top {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid hsl(var(--border));
+    background: hsl(var(--background) / 0.8);
+    backdrop-filter: blur(12px);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header.top h1 { margin: 0; font-size: 1.125rem; font-weight: 600; letter-spacing: -0.02em; }
+  header.top .meta { margin: 2px 0 0; color: hsl(var(--muted-foreground)); font-size: 0.8125rem; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .search { position: relative; }
+  .search input {
+    width: 20rem;
+    max-width: 70vw;
+    height: 2.25rem;
+    padding: 0 2.25rem;
+    border: 1px solid hsl(var(--input));
+    border-radius: calc(var(--radius) - 0.25rem);
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font: inherit;
+    font-size: 0.875rem;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .search input::placeholder { color: hsl(var(--muted-foreground)); }
+  .search input::-webkit-search-cancel-button, .search input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
+  .search input:focus-visible {
+    border-color: hsl(var(--ring));
+    box-shadow: 0 0 0 3px hsl(var(--ring) / 0.25);
+  }
+  .search-icon {
+    position: absolute;
+    left: 0.75rem;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 1rem;
+    height: 1rem;
+    color: hsl(var(--muted-foreground));
+    pointer-events: none;
+  }
+  .search-clear {
+    position: absolute;
+    right: 0.4rem;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border: 0;
+    border-radius: 999px;
+    background: hsl(var(--muted));
+    color: hsl(var(--muted-foreground));
+    font: inherit;
+    font-size: 0.8125rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .search-clear:hover { background: hsl(var(--accent)); color: hsl(var(--foreground)); }
+  .search-clear:focus-visible { outline: none; box-shadow: 0 0 0 2px hsl(var(--ring) / 0.5); }
+  .suggestions {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    display: grid;
+    gap: 2px;
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--popover));
+    color: hsl(var(--popover-foreground));
+    box-shadow: 0 12px 32px hsl(0 0% 0% / 0.45);
+  }
+  .suggestions button {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    padding: 0.5rem 0.625rem;
+    border: 0;
+    border-radius: calc(var(--radius) - 0.375rem);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 0.875rem;
+    text-align: left;
+    cursor: pointer;
+  }
+  .suggestions button:hover, .suggestions button:focus-visible, .suggestions button.is-active { background: hsl(var(--accent)); }
+  .suggestions .suggestion-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .suggestions .suggestion-text em { color: hsl(var(--muted-foreground)); font-style: normal; font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .suggestions .suggestion-group { margin: 0.375rem 0.5rem 0.125rem; color: hsl(var(--muted-foreground)); font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+  .suggestions small { flex: none; padding: 0.0625rem 0.4375rem; border: 1px solid hsl(var(--border)); border-radius: 999px; background: hsl(var(--secondary)); color: hsl(var(--muted-foreground)); font-size: 0.6875rem; }
+  .suggestions small.tram { color: hsl(var(--chart-1)); border-color: hsl(var(--chart-1) / 0.35); }
+  .suggestions small.bus { color: hsl(var(--chart-3)); border-color: hsl(var(--chart-3) / 0.35); }
+  .suggestions .empty { margin: 0; padding: 0.5rem 0.625rem; color: hsl(var(--muted-foreground)); font-size: 0.8125rem; }
+  select, button.action {
+    height: 2.25rem;
+    padding: 0 0.75rem;
+    border: 1px solid hsl(var(--input));
+    border-radius: calc(var(--radius) - 0.25rem);
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+  }
+  select:hover, button.action:hover { background: hsl(var(--accent)); }
+  select:focus-visible, button.action:focus-visible {
+    outline: none;
+    border-color: hsl(var(--ring));
+    box-shadow: 0 0 0 3px hsl(var(--ring) / 0.25);
+  }
+  .segmented {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid hsl(var(--border));
+    border-radius: calc(var(--radius) - 0.125rem);
+    background: hsl(var(--muted));
+  }
+  .segmented button {
+    height: 1.75rem;
+    padding: 0 0.75rem;
+    border: 0;
+    border-radius: calc(var(--radius) - 0.375rem);
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font: inherit;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+  .segmented button:hover { color: hsl(var(--foreground)); }
+  .segmented button[aria-pressed="true"] {
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    box-shadow: 0 1px 2px hsl(0 0% 0% / 0.3);
+  }
+  .segmented button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px hsl(var(--ring) / 0.4);
+  }
+  .exportbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--card));
+    color: hsl(var(--card-foreground));
+  }
+  .exportbar span { font-size: 0.8125rem; }
+  .export-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .mode-table { margin-bottom: 20px; }
+  .mode-table h3 { margin: 0 0 8px; font-size: 0.875rem; font-weight: 600; letter-spacing: -0.01em; }
+  main { padding: 24px; max-width: 1280px; margin: 0 auto; display: grid; gap: 16px; }
+  .scope {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    align-items: center;
+    padding: 14px 18px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--card));
+    color: hsl(var(--card-foreground));
+  }
+  .scope strong { font-weight: 600; letter-spacing: -0.01em; }
+  .scope .badge {
+    display: inline-flex;
+    align-items: center;
+    height: 1.375rem;
+    padding: 0 0.625rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: 999px;
+    background: hsl(var(--secondary));
+    color: hsl(var(--secondary-foreground));
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .scope p { margin: 0; color: hsl(var(--muted-foreground)); font-size: 0.8125rem; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); gap: 12px; }
+  .kpi {
+    padding: 16px 18px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--card));
+    color: hsl(var(--card-foreground));
+    box-shadow: 0 1px 2px hsl(0 0% 0% / 0.05);
+  }
+  .kpi .label { margin: 0; color: hsl(var(--muted-foreground)); font-size: 0.75rem; font-weight: 500; letter-spacing: 0.01em; }
+  .kpi .value { margin: 6px 0 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .kpi .hint { margin: 2px 0 0; color: hsl(var(--muted-foreground)); font-size: 0.75rem; }
+  .kpi .value.good { color: hsl(var(--chart-2)); }
+  .kpi .value.warn { color: hsl(var(--chart-3)); }
+  .kpi .value.bad { color: hsl(var(--chart-5)); }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+  .card {
+    padding: 18px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--card));
+    color: hsl(var(--card-foreground));
+    box-shadow: 0 1px 2px hsl(0 0% 0% / 0.05);
+  }
+  .card h2 { margin: 0 0 14px; font-size: 0.9375rem; font-weight: 600; letter-spacing: -0.01em; }
+  .chart { min-height: 120px; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; font-family: inherit; }
+  .chart .grid { stroke: hsl(var(--border)); stroke-width: 1; }
+  .chart .zero { stroke: hsl(var(--muted-foreground) / 0.5); stroke-width: 1; stroke-dasharray: 4 4; }
+  .chart .axis { fill: hsl(var(--muted-foreground)); font-size: 10px; }
+  .chart .value { fill: hsl(var(--foreground)); font-size: 10px; font-weight: 600; }
+  .chart .bar { fill: hsl(var(--chart-1)); opacity: 0.9; }
+  .chart .bar.good { fill: hsl(var(--chart-2)); }
+  .chart .bar.warn { fill: hsl(var(--chart-3)); }
+  .chart .bar.bad { fill: hsl(var(--chart-5)); }
+  .chart .line { fill: none; stroke: hsl(var(--chart-1)); stroke-width: 2.25; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .dot { fill: hsl(var(--chart-1)); }
+  .chart .empty { margin: 0; color: hsl(var(--muted-foreground)); font-size: 0.8125rem; }
+  .details {
+    padding: 18px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--card));
+    color: hsl(var(--card-foreground));
+    box-shadow: 0 1px 2px hsl(0 0% 0% / 0.05);
+  }
+  .details h2 { margin: 0 0 14px; font-size: 0.9375rem; font-weight: 600; letter-spacing: -0.01em; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+  th, td { padding: 0.625rem 0.75rem; text-align: left; border-bottom: 1px solid hsl(var(--border)); }
+  th { color: hsl(var(--muted-foreground)); font-size: 0.75rem; font-weight: 500; }
+  td { font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; }
+  tbody tr { transition: background-color 0.15s ease; }
+  tbody tr:hover { background: hsl(var(--muted) / 0.6); }
+  tbody tr:last-child td { border-bottom: 0; }
+  .error {
+    padding: 12px 16px;
+    border: 1px solid hsl(var(--destructive) / 0.5);
+    border-radius: var(--radius);
+    background: hsl(var(--destructive) / 0.12);
+    color: hsl(0 91% 71%);
+    font-size: 0.8125rem;
+  }
+  .muted { color: hsl(var(--muted-foreground)); }
+  .bus-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .bus-head h2 { margin: 0; }
+  .bus-head .muted { font-size: 0.75rem; }
+  .bus-list {
+    display: grid;
+    gap: 6px;
+    max-height: 520px;
+    padding-right: 4px;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+  .bus-item {
+    border: 1px solid hsl(var(--border));
+    border-radius: calc(var(--radius) - 0.25rem);
+    background: hsl(var(--background) / 0.35);
+    overflow: hidden;
+    transition: border-color 0.15s ease;
+  }
+  .bus-item.is-open { border-color: hsl(var(--ring) / 0.5); }
+  .bus-row {
+    display: grid;
+    grid-template-columns: 2.5rem minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    width: 100%;
+    padding: 10px 12px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+  .bus-row:hover { background: hsl(var(--muted) / 0.6); }
+  .bus-row:focus-visible { outline: none; box-shadow: inset 0 0 0 2px hsl(var(--ring) / 0.6); }
+  .bus-line {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.25rem;
+    height: 2.25rem;
+    padding: 0 0.375rem;
+    border: 1px solid hsl(var(--chart-3) / 0.4);
+    border-radius: calc(var(--radius) - 0.375rem);
+    background: hsl(var(--chart-3) / 0.14);
+    color: hsl(var(--chart-3));
+    font-size: 0.8125rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .bus-main { display: flex; flex-direction: column; min-width: 0; }
+  .bus-main strong {
+    font-size: 0.875rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bus-main em {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.75rem;
+    font-style: normal;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bus-stats { display: flex; gap: 18px; align-items: center; }
+  .bus-stat { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; min-width: 4.75rem; }
+  .bus-stat em { color: hsl(var(--muted-foreground)); font-size: 0.6875rem; font-style: normal; }
+  .bus-stat strong {
+    font-size: 0.875rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .bus-stat strong.good, .forecast-big.good { color: hsl(var(--chart-2)); }
+  .bus-stat strong.warn, .forecast-big.warn { color: hsl(var(--chart-3)); }
+  .bus-stat strong.bad, .forecast-big.bad { color: hsl(var(--chart-5)); }
+  .bus-detail {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: 18px;
+    padding: 0 12px 14px;
+    border-top: 1px solid hsl(var(--border));
+  }
+  .bus-detail h3 {
+    margin: 12px 0 8px;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .route-preview { list-style: none; margin: 0; padding: 0; }
+  .route-preview li {
+    position: relative;
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) auto auto;
+    gap: 10px;
+    align-items: center;
+    padding: 4px 0;
+  }
+  .route-preview li::before {
+    content: "";
+    position: absolute;
+    left: 6px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: hsl(var(--border));
+  }
+  .route-preview li:first-child::before { top: 50%; }
+  .route-preview li:last-child::before { bottom: 50%; }
+  .route-dot {
+    position: relative;
+    z-index: 1;
+    width: 9px;
+    height: 9px;
+    margin-left: 2px;
+    border: 2px solid hsl(var(--card));
+    border-radius: 999px;
+    background: hsl(var(--muted-foreground) / 0.6);
+  }
+  .route-preview li.is-current .route-dot {
+    background: hsl(var(--chart-3));
+    box-shadow: 0 0 0 3px hsl(var(--chart-3) / 0.2);
+  }
+  .route-stop { display: flex; flex-direction: column; min-width: 0; }
+  .route-stop strong {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .route-stop em {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.6875rem;
+    font-style: normal;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .route-time { color: hsl(var(--muted-foreground)); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+  .route-delay {
+    min-width: 4.25rem;
+    color: hsl(var(--foreground));
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .route-delay.good { color: hsl(var(--chart-2)); }
+  .route-delay.warn { color: hsl(var(--chart-3)); }
+  .route-delay.bad { color: hsl(var(--chart-5)); }
+  .forecast-panel { border-left: 1px solid hsl(var(--border)); padding-left: 18px; }
+  .forecast-big {
+    margin: 0;
+    font-size: 1.75rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .forecast-sub { margin: 2px 0 0; color: hsl(var(--muted-foreground)); font-size: 0.75rem; }
+  .forecast-dl { display: grid; gap: 6px; margin: 14px 0 0; }
+  .forecast-dl div { display: flex; justify-content: space-between; gap: 12px; font-size: 0.8125rem; }
+  .forecast-dl dt { color: hsl(var(--muted-foreground)); }
+  .forecast-dl dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .forecast-note { margin: 12px 0 0; font-size: 0.6875rem; line-height: 1.4; }
+  @media (max-width: 760px) {
+    .bus-detail { grid-template-columns: 1fr; }
+    .forecast-panel { border-left: 0; border-top: 1px solid hsl(var(--border)); padding-left: 0; }
+    .forecast-panel h3 { margin-top: 12px; }
+  }
+  @media (max-width: 640px) {
+    header.top, main { padding: 16px; }
+    .search input { width: 100%; max-width: none; }
+    .search { flex: 1 1 100%; }
+    .segmented { width: 100%; }
+    .segmented button { flex: 1 1 auto; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1>SWU Netzstatistik</h1>
+    <p class="meta" id="meta">Lade Daten …</p>
+  </div>
+  <div class="controls">
+    <div class="search">
+      <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-3.5-3.5"></path>
+      </svg>
+      <input id="search" type="search" placeholder="Linie oder Fahrzeug suchen" autocomplete="off" aria-label="Linie oder Fahrzeug suchen" role="combobox" aria-expanded="false" aria-controls="suggestions" aria-autocomplete="list">
+      <button id="search-clear" class="search-clear" type="button" aria-label="Suche leeren" title="Suche leeren" hidden>×</button>
+      <div id="suggestions" class="suggestions" role="listbox" aria-label="Suchergebnisse" hidden></div>
+    </div>
+    <select id="window" aria-label="Zeitraum">
+      <option value="60">Letzte 60 Minuten</option>
+      <option value="180" selected>Letzte 3 Stunden</option>
+      <option value="360">Letzte 6 Stunden</option>
+      <option value="1440">Letzte 24 Stunden</option>
+      <option value="all">Allzeit (gespeicherter Verlauf)</option>
+    </select>
+    <div class="segmented" id="mode-filter" role="group" aria-label="Verkehrsmittel">
+      <button type="button" data-mode="all" aria-pressed="true">Alle</button>
+      <button type="button" data-mode="tram" aria-pressed="false">Straßenbahn</button>
+      <button type="button" data-mode="bus" aria-pressed="false">Bus</button>
+    </div>
+    <button id="reset" class="action" type="button" hidden>Zum Gesamtnetz</button>
+  </div>
+</header>
+<main>
+  <div id="error" class="error" hidden></div>
+  <section id="scope" class="scope" hidden></section>
+  <section class="kpis" id="kpis"></section>
+  <section class="charts">
+    <article class="card">
+      <h2>Verspätungsverteilung</h2>
+      <div id="chart-histogram" class="chart"></div>
+    </article>
+    <article class="card">
+      <h2>Verspätung im Zeitverlauf</h2>
+      <div id="chart-timeline" class="chart"></div>
+    </article>
+    <article class="card">
+      <h2 id="rank-title">Linien nach Ø Verspätung</h2>
+      <div id="chart-rank" class="chart"></div>
+    </article>
+  </section>
+  <section id="bus-card" class="card bus-card" hidden>
+    <div class="bus-head">
+      <h2>Busse unterwegs</h2>
+      <span class="muted" id="bus-meta"></span>
+    </div>
+    <div id="bus-list" class="bus-list"></div>
+  </section>
+  <section class="exportbar">
+    <span class="muted" id="export-hint">CSV-Export für den aktuellen Zeitraum, Filter und Fokus:</span>
+    <div class="export-actions">
+      <button id="export-stats" class="action" type="button">Statistik als CSV</button>
+      <button id="export-delays" class="action" type="button">Messwerte als CSV</button>
+    </div>
+  </section>
+  <section id="details" class="details" hidden></section>
+</main>
+<script>
+(function () {
+  "use strict";
+
+  var state = { minutes: 180, mode: "all", scope: null, openBus: null, busData: null };
+  var MODE_LABELS = { tram: "Straßenbahn", bus: "Bus", other: "Unbekannt" };
+  var numberFormat = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 });
+
+  var dom = {
+    meta: document.getElementById("meta"),
+    error: document.getElementById("error"),
+    window: document.getElementById("window"),
+    search: document.getElementById("search"),
+    searchClear: document.getElementById("search-clear"),
+    suggestions: document.getElementById("suggestions"),
+    reset: document.getElementById("reset"),
+    modeFilter: document.getElementById("mode-filter"),
+    scope: document.getElementById("scope"),
+    kpis: document.getElementById("kpis"),
+    histogram: document.getElementById("chart-histogram"),
+    timeline: document.getElementById("chart-timeline"),
+    rank: document.getElementById("chart-rank"),
+    rankTitle: document.getElementById("rank-title"),
+    busCard: document.getElementById("bus-card"),
+    busList: document.getElementById("bus-list"),
+    busMeta: document.getElementById("bus-meta"),
+    details: document.getElementById("details"),
+    exportStats: document.getElementById("export-stats"),
+    exportDelays: document.getElementById("export-delays")
+  };
+
+  function esc(value) {
+    return String(value === null || value === undefined ? "" : value).replace(/[&<>"']/g, function (character) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character];
+    });
+  }
+
+  function isNumber(value) {
+    return typeof value === "number" && Number.isFinite(value);
+  }
+
+  function formatDelay(seconds) {
+    if (!isNumber(seconds)) return "–";
+    var minutes = seconds / 60;
+    var rounded = Math.abs(minutes) < 0.05 ? 0 : minutes;
+    var sign = rounded > 0 ? "+" : rounded < 0 ? "−" : "±";
+    return sign + numberFormat.format(Math.abs(rounded)) + " Min";
+  }
+
+  function formatPercent(value) {
+    if (!isNumber(value)) return "–";
+    return numberFormat.format(value) + " %";
+  }
+
+  function timeLabel(iso) {
+    if (!iso) return "–";
+    return new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function dateTimeLabel(iso) {
+    if (!iso) return "–";
+    return new Date(iso).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  }
+
+  function windowLabel(minutes) {
+    if (minutes % 60 === 0) {
+      var hours = minutes / 60;
+      return hours === 24 ? "24 Stunden" : hours === 1 ? "Stunde" : hours + " Stunden";
+    }
+    return minutes + " Minuten";
+  }
+
+  function delayTone(seconds) {
+    if (!isNumber(seconds)) return "";
+    if (seconds > 180) return "bad";
+    if (seconds > 60) return "warn";
+    return "good";
+  }
+
+  function punctualTone(percent) {
+    if (!isNumber(percent)) return "";
+    if (percent < 60) return "bad";
+    if (percent < 80) return "warn";
+    return "good";
+  }
+
+  function modeLabel(mode) {
+    return MODE_LABELS[mode] || "–";
+  }
+
+  function activeModeText() {
+    return state.mode === "all" ? "" : modeLabel(state.mode);
+  }
+
+  function emptyState(text) {
+    return '<p class="empty">' + esc(text) + "</p>";
+  }
+
+  function svgFrame(width, height, body) {
+    return '<svg viewBox="0 0 ' + width + " " + height + '" role="img" preserveAspectRatio="xMidYMid meet">' + body + "</svg>";
+  }
+
+  function svgBarChart(container, buckets) {
+    var total = buckets.reduce(function (sum, bucket) { return sum + bucket.count; }, 0);
+    if (!total) {
+      container.innerHTML = emptyState("Keine Messungen in diesem Zeitraum.");
+      return;
+    }
+    var width = 640, height = 260;
+    var left = 36, right = 12, top = 24, bottom = 54;
+    var innerWidth = width - left - right;
+    var innerHeight = height - top - bottom;
+    var max = Math.max.apply(null, buckets.map(function (bucket) { return bucket.count; }));
+    var slot = innerWidth / buckets.length;
+    var barWidth = Math.min(66, slot * 0.66);
+    var body = "";
+    for (var step = 0; step <= 2; step++) {
+      var y = top + innerHeight * (step / 2);
+      var value = Math.round(max * (1 - step / 2));
+      body += '<line class="grid" x1="' + left + '" y1="' + y + '" x2="' + (left + innerWidth) + '" y2="' + y + '"/>';
+      body += '<text class="axis" x="' + (left - 8) + '" y="' + (y + 4) + '" text-anchor="end">' + value + "</text>";
+    }
+    buckets.forEach(function (bucket, index) {
+      var barHeight = (bucket.count / max) * innerHeight;
+      var x = left + slot * index + (slot - barWidth) / 2;
+      var yPos = top + innerHeight - barHeight;
+      body += '<rect class="bar" x="' + x + '" y="' + yPos + '" width="' + barWidth + '" height="' + barHeight + '" rx="4">' +
+        "<title>" + esc(bucket.label) + ": " + bucket.count + " Messungen</title></rect>";
+      if (bucket.count > 0) {
+        body += '<text class="value" x="' + (x + barWidth / 2) + '" y="' + (yPos - 6) + '" text-anchor="middle">' + bucket.count + "</text>";
+      }
+      var parts = bucket.label.split(" zu ");
+      var labelY = top + innerHeight + 20;
+      if (parts.length === 2) {
+        body += '<text class="axis" x="' + (x + barWidth / 2) + '" y="' + labelY + '" text-anchor="middle">' + esc(parts[0]) +
+          '<tspan x="' + (x + barWidth / 2) + '" dy="12">zu ' + esc(parts[1]) + "</tspan></text>";
+      } else {
+        body += '<text class="axis" x="' + (x + barWidth / 2) + '" y="' + labelY + '" text-anchor="middle">' + esc(bucket.label) + "</text>";
+      }
+    });
+    container.innerHTML = svgFrame(width, height, body);
+  }
+
+  function svgLineChart(container, points) {
+    var measured = points.filter(function (point) { return isNumber(point.averageDelaySeconds); });
+    if (!measured.length) {
+      container.innerHTML = emptyState("Keine Messungen in diesem Zeitraum.");
+      return;
+    }
+    var width = 640, height = 260;
+    var left = 50, right = 16, top = 18, bottom = 32;
+    var innerWidth = width - left - right;
+    var innerHeight = height - top - bottom;
+    var values = measured.map(function (point) { return point.averageDelaySeconds; });
+    var min = Math.min.apply(null, values.concat([0]));
+    var max = Math.max.apply(null, values.concat([0]));
+    if (min === max) { min -= 30; max += 30; }
+    var padding = (max - min) * 0.12;
+    min -= padding;
+    max += padding;
+
+    function xAt(index) {
+      return points.length === 1 ? left + innerWidth / 2 : left + (index / (points.length - 1)) * innerWidth;
+    }
+    function yAt(value) {
+      return top + ((max - value) / (max - min)) * innerHeight;
+    }
+
+    var body = "";
+    [min, (min + max) / 2, max].forEach(function (level) {
+      var y = yAt(level);
+      body += '<line class="grid" x1="' + left + '" y1="' + y + '" x2="' + (left + innerWidth) + '" y2="' + y + '"/>';
+      body += '<text class="axis" x="' + (left - 8) + '" y="' + (y + 4) + '" text-anchor="end">' + numberFormat.format(level / 60) + "</text>";
+    });
+    body += '<line class="zero" x1="' + left + '" y1="' + yAt(0) + '" x2="' + (left + innerWidth) + '" y2="' + yAt(0) + '"/>';
+
+    var segments = [];
+    var current = [];
+    points.forEach(function (point, index) {
+      if (!isNumber(point.averageDelaySeconds)) {
+        if (current.length) segments.push(current);
+        current = [];
+        return;
+      }
+      current.push({ x: xAt(index), y: yAt(point.averageDelaySeconds), point: point });
+    });
+    if (current.length) segments.push(current);
+
+    segments.forEach(function (segment) {
+      if (segment.length > 1) {
+        var path = segment.map(function (item, index) {
+          return (index === 0 ? "M" : "L") + item.x.toFixed(1) + " " + item.y.toFixed(1);
+        }).join(" ");
+        body += '<path class="line" d="' + path + '"/>';
+      }
+      segment.forEach(function (item) {
+        body += '<circle class="dot" cx="' + item.x.toFixed(1) + '" cy="' + item.y.toFixed(1) + '" r="3">' +
+          "<title>" + timeLabel(item.point.timestamp) + " Uhr: " + formatDelay(item.point.averageDelaySeconds) +
+          " (" + item.point.samples + " Messungen)</title></circle>";
+      });
+    });
+
+    var tickIndexes = points.length === 1 ? [0] : [0, Math.floor((points.length - 1) / 2), points.length - 1];
+    tickIndexes.forEach(function (index) {
+      body += '<text class="axis" x="' + xAt(index) + '" y="' + (height - 8) + '" text-anchor="middle">' + timeLabel(points[index].timestamp) + "</text>";
+    });
+    container.innerHTML = svgFrame(width, height, body);
+  }
+
+  function svgRankChart(container, items) {
+    var rows = items.filter(function (item) { return isNumber(item.value); }).slice(0, 10);
+    if (!rows.length) {
+      container.innerHTML = emptyState("Keine Messungen in diesem Zeitraum.");
+      return;
+    }
+    var width = 640, rowHeight = 30, top = 8, left = 104, right = 78;
+    var height = Math.max(80, rows.length * rowHeight + top * 2);
+    var barArea = width - left - right;
+    var maxAbs = Math.max.apply(null, rows.map(function (row) { return Math.abs(row.value); }).concat([1]));
+    var body = "";
+    rows.forEach(function (row, index) {
+      var y = top + index * rowHeight;
+      var barWidth = Math.max(2, (Math.abs(row.value) / maxAbs) * barArea);
+      var tone = delayTone(row.value) || "good";
+      body += '<text class="axis" x="0" y="' + (y + rowHeight / 2 + 4) + '">' + esc(row.label) + "</text>";
+      body += '<rect class="bar ' + tone + '" x="' + left + '" y="' + (y + 5) + '" width="' + barWidth.toFixed(1) +
+        '" height="' + (rowHeight - 12) + '" rx="4"><title>' + esc(row.label) + ": " + formatDelay(row.value) +
+        " (" + row.samples + " Messungen)</title></rect>";
+      body += '<text class="value" x="' + (left + barWidth + 8) + '" y="' + (y + rowHeight / 2 + 4) + '">' + formatDelay(row.value) + "</text>";
+    });
+    container.innerHTML = svgFrame(width, height, body);
+  }
+
+  function kpiCard(label, value, hint, tone) {
+    return '<div class="kpi"><p class="label">' + esc(label) + '</p><p class="value ' + (tone || "") + '">' + esc(value) +
+      "</p>" + (hint ? '<p class="hint">' + esc(hint) + "</p>" : "") + "</div>";
+  }
+
+  function renderKpis(data) {
+    var summary = data.summary;
+    var cards = [];
+    if (data.scope.type === "network") {
+      cards.push(kpiCard("Linien", numberFormat.format(data.network.routes), "im Netz"));
+      var byMode = data.network.vehiclesByMode || {};
+      var routesByMode = data.network.routesByMode || {};
+      cards.push(kpiCard("Fahrzeuge", numberFormat.format(data.network.vehicles), data.network.activeVehicles + " aktiv"));
+      if (state.mode === "all") {
+        cards.push(kpiCard("Straßenbahn", numberFormat.format(byMode.tram || 0), numberFormat.format(routesByMode.tram || 0) + " Linien"));
+        cards.push(kpiCard("Bus", numberFormat.format(byMode.bus || 0), numberFormat.format(routesByMode.bus || 0) + " Linien"));
+      }
+      cards.push(kpiCard("Haltestellen", numberFormat.format(data.network.stops), data.network.stopPoints + " Steige"));
+      cards.push(kpiCard("Ø Verspätung", formatDelay(summary.averageDelaySeconds), "Median " + formatDelay(summary.medianDelaySeconds), delayTone(summary.averageDelaySeconds)));
+      cards.push(kpiCard("Pünktlichkeit", formatPercent(summary.punctualPercent), "−1 bis +3 Min", punctualTone(summary.punctualPercent)));
+      cards.push(kpiCard("Über 3 Min zu spät", formatPercent(summary.latePercent), "Anteil der Messungen", isNumber(summary.latePercent) && summary.latePercent > 30 ? "bad" : ""));
+      cards.push(kpiCard("Max. Verspätung", formatDelay(summary.maxDelaySeconds), "im Zeitraum"));
+      cards.push(kpiCard("Messungen", numberFormat.format(summary.samples), "Verspätungswerte"));
+    } else if (data.scope.type === "route") {
+      var route = data.details;
+      cards.push(kpiCard("Ø Verspätung", formatDelay(summary.averageDelaySeconds), "Median " + formatDelay(summary.medianDelaySeconds), delayTone(summary.averageDelaySeconds)));
+      cards.push(kpiCard("Pünktlichkeit", formatPercent(summary.punctualPercent), "−1 bis +3 Min", punctualTone(summary.punctualPercent)));
+      cards.push(kpiCard("Messungen", numberFormat.format(summary.samples), "Verspätungswerte"));
+      cards.push(kpiCard("Verkehrsmittel", route ? modeLabel(route.mode) : "–", route && route.category !== null ? "Kategorie " + route.category : ""));
+      cards.push(kpiCard("Fahrzeuge", numberFormat.format(data.vehicles.length), "mit Messungen"));
+      cards.push(kpiCard("Haltestellen", route ? numberFormat.format(route.stopCount) : "–", route ? route.stopPointCount + " Steige" : ""));
+      cards.push(kpiCard("Max. Verspätung", formatDelay(summary.maxDelaySeconds), "im Zeitraum"));
+    } else {
+      var vehicle = data.details;
+      cards.push(kpiCard("Ø Verspätung", formatDelay(summary.averageDelaySeconds), "Median " + formatDelay(summary.medianDelaySeconds), delayTone(summary.averageDelaySeconds)));
+      cards.push(kpiCard("Pünktlichkeit", formatPercent(summary.punctualPercent), "−1 bis +3 Min", punctualTone(summary.punctualPercent)));
+      cards.push(kpiCard("Messungen", numberFormat.format(summary.samples), "Verspätungswerte"));
+      cards.push(kpiCard("Linien", vehicle ? numberFormat.format(vehicle.routes.length) : "–", "im Zeitraum"));
+      cards.push(kpiCard("Kapazität", vehicle && isNumber(vehicle.seats) ? vehicle.seats + " Sitze" : "–", vehicle && isNumber(vehicle.standingSpaces) ? vehicle.standingSpaces + " Stehplätze" : ""));
+      cards.push(kpiCard("Max. Verspätung", formatDelay(summary.maxDelaySeconds), "im Zeitraum"));
+    }
+    dom.kpis.innerHTML = cards.join("");
+  }
+
+  function renderScope(data) {
+    dom.scope.hidden = false;
+    dom.reset.hidden = data.scope.type === "network";
+    var filter = activeModeText();
+    if (data.scope.type === "route") {
+      var route = data.details;
+      var parts = [];
+      if (route) parts.push(modeLabel(route.mode));
+      if (route && route.directions.length) parts.push("Richtungen: " + route.directions.join(", "));
+      if (route) parts.push(route.stopCount + " Haltestellen");
+      if (route && route.category !== null) parts.push("Kategorie " + route.category);
+      if (filter) parts.push("Filter: " + filter);
+      dom.scope.innerHTML = '<span class="badge">Linie</span>' +
+        "<strong>Linie " + esc(route ? route.routeName : data.scope.routeNumber) + "</strong>" +
+        '<p>' + esc(parts.join(" · ")) + "</p>";
+      return;
+    }
+    if (data.scope.type === "vehicle") {
+      var vehicle = data.details;
+      var info = [modeLabel(vehicle ? vehicle.mode : null)];
+      if (vehicle && vehicle.make) info.push([vehicle.make, vehicle.model].filter(Boolean).join(" "));
+      if (vehicle && isNumber(vehicle.lengthMm)) info.push((vehicle.lengthMm / 1000).toLocaleString("de-DE") + " m");
+      if (vehicle && vehicle.wheelchairSpaces) info.push(vehicle.wheelchairSpaces + " Rollstuhlplätze");
+      info.push(vehicle && vehicle.isActive ? "aktiv" : "inaktiv");
+      if (filter) info.push("Filter: " + filter);
+      dom.scope.innerHTML = '<span class="badge">Fahrzeug</span>' +
+        "<strong>Fahrzeug " + esc(data.scope.vehicleNumber) + "</strong>" +
+        '<p>' + esc(info.join(" · ")) + "</p>";
+      return;
+    }
+    dom.scope.innerHTML = '<span class="badge">Gesamtnetz</span>' +
+      "<strong>Alle Linien und Fahrzeuge</strong>" +
+      "<p>" + esc((filter ? "Filter: " + filter + " · " : "") + "Daten aus dem zuletzt synchronisierten Snapshot.") + "</p>";
+  }
+
+  function renderRank(data) {
+    if (data.scope.type === "vehicle") {
+      dom.rankTitle.textContent = "Linien dieses Fahrzeugs nach Ø Verspätung";
+      svgRankChart(dom.rank, data.routes.map(function (route) {
+        return { label: "Linie " + route.routeName, value: route.averageDelaySeconds, samples: route.samples };
+      }));
+      return;
+    }
+    if (data.scope.type === "route") {
+      dom.rankTitle.textContent = "Fahrzeuge auf dieser Linie nach Ø Verspätung";
+      svgRankChart(dom.rank, data.vehicles.map(function (vehicle) {
+        return { label: "Bus " + vehicle.vehicleNumber, value: vehicle.averageDelaySeconds, samples: vehicle.samples };
+      }));
+      return;
+    }
+    dom.rankTitle.textContent = "Linien nach Ø Verspätung";
+    svgRankChart(dom.rank, data.routes.map(function (route) {
+      return { label: "Linie " + route.routeName, value: route.averageDelaySeconds, samples: route.samples };
+    }));
+  }
+
+  function renderTable(head, rows, textColumns) {
+    if (!rows.length) return emptyState("Keine Messungen in diesem Zeitraum.");
+    var text = textColumns || [0];
+    function cellClass(index) {
+      return text.indexOf(index) === -1 ? "num" : "";
+    }
+    var html = '<table><thead><tr>' + head.map(function (cell, index) {
+      return '<th class="' + cellClass(index) + '">' + esc(cell) + "</th>";
+    }).join("") + "</tr></thead><tbody>";
+    rows.forEach(function (row) {
+      html += "<tr>" + row.map(function (cell, index) {
+        return '<td class="' + cellClass(index) + '">' + esc(cell) + "</td>";
+      }).join("") + "</tr>";
+    });
+    return html + "</tbody></table>";
+  }
+
+  function renderModeBreakdown(data) {
+    if (!data.modeBreakdown || data.modeBreakdown.length < 2) return "";
+    return '<div class="mode-table"><h3>Straßenbahn und Bus im Vergleich</h3>' + renderTable(
+      ["Verkehrsmittel", "Fahrzeuge", "Linien", "Messungen", "Ø", "Pünktlich"],
+      data.modeBreakdown.map(function (entry) {
+        return [
+          entry.label,
+          numberFormat.format(entry.vehicles),
+          numberFormat.format(entry.routes),
+          numberFormat.format(entry.samples),
+          formatDelay(entry.averageDelaySeconds),
+          formatPercent(entry.punctualPercent)
+        ];
+      })
+    ) + "</div>";
+  }
+
+  function renderDetails(data) {
+    dom.details.hidden = false;
+    var breakdown = renderModeBreakdown(data);
+    if (data.scope.type === "route") {
+      dom.details.innerHTML = breakdown + "<h2>Fahrzeuge auf dieser Linie</h2>" + renderTable(
+        ["Fahrzeug", "Verkehrsmittel", "Messungen", "Ø", "Median", "Pünktlich"],
+        data.vehicles.map(function (vehicle) {
+          return [
+            "Fahrzeug " + vehicle.vehicleNumber + (vehicle.vehicleName ? " · " + vehicle.vehicleName : ""),
+            modeLabel(vehicle.mode),
+            numberFormat.format(vehicle.samples),
+            formatDelay(vehicle.averageDelaySeconds),
+            formatDelay(vehicle.medianDelaySeconds),
+            formatPercent(vehicle.punctualPercent)
+          ];
+        }),
+        [0, 1]
+      );
+      return;
+    }
+    if (data.scope.type === "vehicle") {
+      dom.details.innerHTML = "<h2>Linien dieses Fahrzeugs</h2>" + renderTable(
+        ["Linie", "Verkehrsmittel", "Messungen", "Ø", "Median", "Pünktlich"],
+        data.routes.map(function (route) {
+          return [
+            "Linie " + route.routeName,
+            modeLabel(route.mode),
+            numberFormat.format(route.samples),
+            formatDelay(route.averageDelaySeconds),
+            formatDelay(route.medianDelaySeconds),
+            formatPercent(route.punctualPercent)
+          ];
+        }),
+        [0, 1]
+      );
+      return;
+    }
+    dom.details.innerHTML = breakdown + "<h2>Linien mit Messungen im Zeitraum</h2>" + renderTable(
+      ["Linie", "Verkehrsmittel", "Messungen", "Ø", "Median", "Pünktlich"],
+      data.routes.map(function (route) {
+        return [
+          "Linie " + route.routeName,
+          modeLabel(route.mode),
+          numberFormat.format(route.samples),
+          formatDelay(route.averageDelaySeconds),
+          formatDelay(route.medianDelaySeconds),
+          formatPercent(route.punctualPercent)
+        ];
+      }),
+      [0, 1]
+    );
+  }
+
+  function busRouteLabel(bus) {
+    if (bus.routeNumber === null || bus.routeNumber === undefined) return "Linie unbekannt";
+    return "Linie " + (bus.routeName || bus.routeNumber);
+  }
+
+  function trendLabel(slope) {
+    if (!isNumber(slope)) return "kein Trend";
+    var perHour = slope * 60;
+    var direction = perHour > 0.5 ? "steigend" : perHour < -0.5 ? "sinkend" : "stabil";
+    return direction + " · " + formatDelay(perHour) + "/Std";
+  }
+
+  function forecastBasisLabel(basis, samples) {
+    if (basis === "live") return "SWU-Liveprognose je Haltestelle";
+    if (basis === "trend") return "Trend aus den letzten 45 Minuten (" + samples + " Messungen)";
+    if (basis === "current") return "Aktueller Messwert, noch kein Trend verfügbar";
+    return "Keine Prognose verfügbar";
+  }
+
+  function renderBusPreview(bus) {
+    return '<ol class="route-preview">' + bus.stops.map(function (stop, index) {
+      var current = index === 0;
+      var parts = [];
+      if (stop.platformName) parts.push("Steig " + stop.platformName);
+      if (current) parts.push("nächster Halt");
+      if (!stop.live && stop.delaySeconds !== null) parts.push("Prognose");
+      return '<li' + (current ? ' class="is-current"' : "") + '>' +
+        '<span class="route-dot"></span>' +
+        '<span class="route-stop"><strong>' + esc(stop.stopName || "Haltestelle") + "</strong><em>" + esc(parts.join(" · ")) + "</em></span>" +
+        '<span class="route-time">' + esc(timeLabel(stop.scheduledTime)) + "</span>" +
+        '<span class="route-delay ' + delayTone(stop.delaySeconds) + '">' + esc(formatDelay(stop.delaySeconds)) + "</span></li>";
+    }).join("") + "</ol>";
+  }
+
+  function renderBusDetail(bus) {
+    return '<div class="bus-detail">' +
+      "<div><h3>Linienvorschau</h3>" + renderBusPreview(bus) + "</div>" +
+      '<aside class="forecast-panel"><h3>Verspätungsprognose</h3>' +
+      '<p class="forecast-big ' + delayTone(bus.forecast.delaySeconds) + '">' + esc(formatDelay(bus.forecast.delaySeconds)) + "</p>" +
+      '<p class="forecast-sub">in ' + esc(bus.forecast.minutesAhead) + " Minuten · " + esc(busRouteLabel(bus)) +
+      (bus.direction ? " Richtung " + esc(bus.direction) : "") + "</p>" +
+      '<dl class="forecast-dl">' +
+      "<div><dt>Jetzt</dt><dd>" + esc(formatDelay(bus.currentDelaySeconds)) + "</dd></div>" +
+      "<div><dt>Trend</dt><dd>" + esc(trendLabel(bus.trendSecondsPerMinute)) + "</dd></div>" +
+      "<div><dt>Fahrzeug</dt><dd>" + esc(bus.vehicleNumber) + "</dd></div>" +
+      "</dl>" +
+      '<p class="forecast-note muted">' + esc(forecastBasisLabel(bus.forecast.basis, bus.trendSamples)) + "</p>" +
+      "</aside></div>";
+  }
+
+  function renderBuses(buses) {
+    if (buses) state.busData = buses;
+    buses = state.busData;
+    if (!buses || !buses.items || !buses.items.length) {
+      dom.busCard.hidden = true;
+      dom.busList.innerHTML = "";
+      state.openBus = null;
+      return;
+    }
+    if (state.openBus !== null && !buses.items.some(function (bus) { return bus.vehicleNumber === state.openBus; })) {
+      state.openBus = null;
+    }
+    dom.busCard.hidden = false;
+    var more = buses.total > buses.items.length ? " · " + numberFormat.format(buses.total - buses.items.length) + " weitere" : "";
+    dom.busMeta.textContent = numberFormat.format(buses.items.length) + " Busse unterwegs" + more +
+      " · Stand " + timeLabel(buses.referenceTime) + " Uhr · Linienvorschau und Prognose";
+    dom.busList.innerHTML = buses.items.map(function (bus) {
+      var open = bus.vehicleNumber === state.openBus;
+      return '<div class="bus-item' + (open ? " is-open" : "") + '">' +
+        '<button class="bus-row" type="button" data-bus="' + esc(bus.vehicleNumber) + '" aria-expanded="' + open + '">' +
+        '<span class="bus-line">' + esc(bus.routeNumber === null ? "–" : bus.routeName || bus.routeNumber) + "</span>" +
+        '<span class="bus-main"><strong>' + esc(bus.currentStop || "Unterwegs") + "</strong><em>" +
+        esc(busRouteLabel(bus) + (bus.direction ? " · " + bus.direction : "") + " · Fahrzeug " + bus.vehicleNumber) + "</em></span>" +
+        '<span class="bus-stats">' +
+        '<span class="bus-stat"><em>jetzt</em><strong class="' + delayTone(bus.currentDelaySeconds) + '">' + esc(formatDelay(bus.currentDelaySeconds)) + "</strong></span>" +
+        '<span class="bus-stat"><em>in ' + esc(bus.forecast.minutesAhead) + ' Min</em><strong class="' + delayTone(bus.forecast.delaySeconds) + '">' + esc(formatDelay(bus.forecast.delaySeconds)) + "</strong></span>" +
+        "</span></button>" +
+        (open ? renderBusDetail(bus) : "") +
+        "</div>";
+    }).join("");
+  }
+
+  function render(data) {
+    dom.error.hidden = true;
+    var rangeText = data.window.allTime ? "Allzeit" : windowLabel(data.window.minutes);
+    var sinceText = data.window.allTime && data.window.since ? " seit " + dateTimeLabel(data.window.since) : "";
+    dom.meta.textContent = "Stand " + dateTimeLabel(data.syncedAt) + " Uhr · " + rangeText + sinceText +
+      " · " + numberFormat.format(data.summary.samples) + " Messungen";
+    renderScope(data);
+    renderKpis(data);
+    svgBarChart(dom.histogram, data.histogram);
+    svgLineChart(dom.timeline, data.timeline);
+    renderRank(data);
+    renderBuses(data.buses);
+    renderDetails(data);
+  }
+
+  function showError(message) {
+    dom.error.hidden = false;
+    dom.error.textContent = message;
+    dom.meta.textContent = "Keine Daten";
+  }
+
+  async function load() {
+    var params = new URLSearchParams({ minutes: String(state.minutes) });
+    if (state.mode !== "all") params.set("mode", state.mode);
+    if (state.scope && state.scope.type === "route") params.set("routeNumber", String(state.scope.value));
+    if (state.scope && state.scope.type === "vehicle") params.set("vehicleNumber", String(state.scope.value));
+    dom.meta.textContent = "Lade Daten …";
+    try {
+      var response = await fetch("/api/stats?" + params.toString(), { cache: "no-store" });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      render(await response.json());
+    } catch (error) {
+      showError("Statistiken konnten nicht geladen werden: " + error.message);
+    }
+  }
+
+  function selectScope(type, value) {
+    state.scope = { type: type, value: value };
+    dom.search.value = "";
+    updateSearchClear();
+    hideSuggestions();
+    load();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function hideSuggestions() {
+    dom.suggestions.hidden = true;
+    dom.suggestions.innerHTML = "";
+    dom.search.setAttribute("aria-expanded", "false");
+  }
+
+  function updateSearchClear() {
+    dom.searchClear.hidden = dom.search.value.length === 0;
+  }
+
+  function suggestionOptions() {
+    return Array.prototype.slice.call(dom.suggestions.querySelectorAll("button[data-type]"));
+  }
+
+  function setActiveOption(option) {
+    suggestionOptions().forEach(function (other) {
+      other.classList.toggle("is-active", other === option);
+      other.setAttribute("aria-selected", String(other === option));
+    });
+    if (option) option.scrollIntoView({ block: "nearest" });
+  }
+
+  function renderSuggestions(data) {
+    var groups = [];
+    if (data.routes.length) {
+      groups.push({
+        title: "Linien",
+        items: data.routes.map(function (route) {
+          return {
+            type: "route",
+            value: route.routeNumber,
+            label: "Linie " + (route.routeName || route.routeNumber),
+            detail: "",
+            hint: modeLabel(route.mode),
+            mode: route.mode
+          };
+        })
+      });
+    }
+    if (data.vehicles.length) {
+      groups.push({
+        title: "Fahrzeuge",
+        items: data.vehicles.map(function (vehicle) {
+          return {
+            type: "vehicle",
+            value: vehicle.vehicleNumber,
+            label: "Fahrzeug " + vehicle.vehicleNumber,
+            detail: vehicle.vehicleName || "",
+            hint: modeLabel(vehicle.mode),
+            mode: vehicle.mode
+          };
+        })
+      });
+    }
+    dom.suggestions.hidden = false;
+    dom.search.setAttribute("aria-expanded", "true");
+    if (!groups.length) {
+      dom.suggestions.innerHTML = '<p class="empty">Keine Linie und kein Fahrzeug gefunden.</p>';
+      return;
+    }
+    dom.suggestions.innerHTML = groups.map(function (group) {
+      return '<p class="suggestion-group">' + esc(group.title) + "</p>" + group.items.map(function (item) {
+        var detail = item.detail ? "<em>" + esc(item.detail) + "</em>" : "";
+        return '<button type="button" role="option" aria-selected="false" data-type="' + item.type + '" data-value="' + esc(item.value) + '">' +
+          '<span class="suggestion-text"><span>' + esc(item.label) + "</span>" + detail + "</span>" +
+          '<small class="' + esc(item.mode) + '">' + esc(item.hint) + "</small></button>";
+      }).join("");
+    }).join("");
+  }
+
+  var suggestionTimer = null;
+  dom.search.addEventListener("input", function () {
+    clearTimeout(suggestionTimer);
+    updateSearchClear();
+    var query = dom.search.value.trim();
+    if (!query) {
+      hideSuggestions();
+      return;
+    }
+    suggestionTimer = setTimeout(async function () {
+      try {
+        var response = await fetch("/api/stats/search?q=" + encodeURIComponent(query));
+        if (!response.ok) return;
+        renderSuggestions(await response.json());
+      } catch (error) {
+        hideSuggestions();
+      }
+    }, 150);
+  });
+
+  dom.search.addEventListener("keydown", function (event) {
+    var options = suggestionOptions();
+    var active = dom.suggestions.querySelector("button.is-active");
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (!options.length) return;
+      event.preventDefault();
+      var index = active ? options.indexOf(active) : -1;
+      var next = event.key === "ArrowDown"
+        ? (index + 1) % options.length
+        : (index - 1 + options.length) % options.length;
+      setActiveOption(options[next]);
+    } else if (event.key === "Enter") {
+      if (!options.length) return;
+      event.preventDefault();
+      (active || options[0]).click();
+    } else if (event.key === "Escape") {
+      hideSuggestions();
+    }
+  });
+
+  dom.suggestions.addEventListener("click", function (event) {
+    var button = event.target.closest("button[data-type]");
+    if (!button) return;
+    selectScope(button.dataset.type, Number(button.dataset.value));
+  });
+
+  document.addEventListener("click", function (event) {
+    if (!event.target.closest(".search")) hideSuggestions();
+  });
+
+  dom.searchClear.addEventListener("click", function () {
+    dom.search.value = "";
+    updateSearchClear();
+    hideSuggestions();
+    dom.search.focus();
+  });
+
+  // "/" or Ctrl/Cmd+K jumps into the search field from anywhere on the page.
+  document.addEventListener("keydown", function (event) {
+    var tag = event.target && event.target.tagName;
+    var typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    if ((event.key === "/" && !typing) || ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k")) {
+      event.preventDefault();
+      dom.search.focus();
+      dom.search.select();
+    }
+  });
+
+  dom.window.addEventListener("change", function () {
+    state.minutes = dom.window.value === "all" ? "all" : Number(dom.window.value);
+    load();
+  });
+
+  dom.reset.addEventListener("click", function () {
+    state.scope = null;
+    load();
+  });
+
+  dom.busList.addEventListener("click", function (event) {
+    var row = event.target.closest("button[data-bus]");
+    if (!row) return;
+    var number = Number(row.dataset.bus);
+    state.openBus = state.openBus === number ? null : number;
+    renderBuses();
+  });
+
+  dom.modeFilter.addEventListener("click", function (event) {
+    var button = event.target.closest("button[data-mode]");
+    if (!button) return;
+    state.mode = button.dataset.mode;
+    Array.prototype.forEach.call(dom.modeFilter.querySelectorAll("button[data-mode]"), function (other) {
+      other.setAttribute("aria-pressed", String(other === button));
+    });
+    load();
+  });
+
+  function exportDataset() {
+    if (state.scope && state.scope.type === "route") return "vehicles";
+    return "routes";
+  }
+
+  function exportUrl(dataset) {
+    var params = new URLSearchParams({ dataset: dataset, minutes: String(state.minutes) });
+    if (state.mode !== "all") params.set("mode", state.mode);
+    if (state.scope && state.scope.type === "route") params.set("routeNumber", String(state.scope.value));
+    if (state.scope && state.scope.type === "vehicle") params.set("vehicleNumber", String(state.scope.value));
+    return "/api/stats/export?" + params.toString();
+  }
+
+  function download(url) {
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = "";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  dom.exportStats.addEventListener("click", function () { download(exportUrl(exportDataset())); });
+  dom.exportDelays.addEventListener("click", function () { download(exportUrl("delays")); });
+
+  load();
+  setInterval(function () { load(); }, 60000);
+})();
+</script>
+</body>
+</html>
