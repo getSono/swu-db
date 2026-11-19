@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "sync": "node src/server.js --sync-only"
+    "sync": "node src/server.js --sync-only",
+    "gtfs": "node src/server.js --gtfs-only"
   },
   "engines": {
     "node": ">=18"

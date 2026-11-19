@@ -32,6 +32,15 @@ Eine einmalige Synchronisierung ist mit `npm run sync` möglich.
 - `GET /api/delays/average?routeNumber=201&minutes=60` – durchschnittliche Verspätung einer Linie
 - `GET /api/delays/average?vehicleNumber=13&minutes=60` – durchschnittliche Verspätung eines Fahrzeugs
 - `GET /api/sync` – sofortige Synchronisierung auslösen
+- `GET /api/gtfs` – Übersicht über den GTFS-Fahrplan (Betreiber, Feed-Version, Anzahl der Datensätze)
+- `GET /api/gtfs/stops` oder `GET /api/gtfs/stops?q=ZUP` – Haltestellen inklusive bedienender Linien
+- `GET /api/gtfs/stops/ZUP` – Haltestelle mit Linien
+- `GET /api/gtfs/routes` oder `GET /api/gtfs/routes?q=1` – Linien
+- `GET /api/gtfs/routes/L01` – Linie mit Haltestellenfolge je Fahrtrichtung
+- `GET /api/gtfs/trips/<tripId>` – Fahrt mit allen Halten und Zeiten
+- `GET /api/gtfs/departures?stopId=ZUP&minutes=60&limit=30` – nächste Abfahrten aus dem Fahrplan
+- `GET /api/gtfs/map` – Haltestellen mit Koordinaten und Linienverläufe für die Netzkarte im Dashboard
+- `GET /api/gtfs/sync` – GTFS-Fahrplan neu herunterladen
 - `GET /stats` – HTML-Dashboard mit Diagrammen zum Netz, zu Linien und zu Fahrzeugen
 - `GET /api/stats?minutes=180` – Statistiken für das gesamte Netz
 - `GET /api/stats?routeNumber=201&minutes=180` – Statistiken einer Linie
@@ -52,6 +61,8 @@ Straßenbahnen und Busse lassen sich getrennt filtern und werden zusätzlich
 direkt gegenübergestellt. Eine Karte „Busse unterwegs“ zeigt für jeden Bus die
 nächsten Halte als Linienvorschau und eine Verspätungsprognose – aus den
 SWU-Livewerten je Haltestelle, sonst aus dem Trend der letzten 45 Minuten.
+Eine Netzkarte zeichnet Haltestellen und Linienverläufe aus dem GTFS-Fahrplan
+über OpenStreetMap-Kacheln; der Filter Straßenbahn/Bus wirkt auch auf die Karte.
 Statistik und Messwerte stehen als CSV-Export zur Verfügung
 (Semikolon-getrennt, UTF-8 mit BOM für Excel).
 
@@ -62,6 +73,26 @@ $env:SWU_BASE_URL = "https://api.swu.de/mobility/v1"
 $env:PORT = "3000"
 npm start
 ```
+
+## GTFS-Fahrplan
+
+Zusätzlich zu den Live-Daten lädt der Server den GTFS-Fahrplan von
+`https://gtfs.swu.de/daten/SWU.zip`. Die Datei liegt unter `data/gtfs/SWU.zip`
+und wird beim Start heruntergeladen, wenn sie fehlt oder älter als 24 Stunden
+ist. Anschließend wird sie im Arbeitsspeicher entpackt und als CSV gelesen; das
+ZIP wird also nicht dauerhaft entpackt. Das Verzeichnis `data/gtfs/` ist von Git
+ausgenommen.
+
+```powershell
+npm run gtfs
+```
+
+`npm run gtfs` lädt den Fahrplan einmalig neu, ohne den Server zu starten. Eine
+andere Quelle lässt sich über `GTFS_URL` setzen. Die Abfahrten unter
+`/api/gtfs/departures` berücksichtigen den gültigen Fahrplanzeitraum, Feiertage
+aus `calendar_dates.txt` und Fahrten nach Mitternacht (Zeiten über `24:00:00`).
+Für die Netzkarte im Dashboard liefert `/api/gtfs/map` die Haltestellen mit
+Koordinaten sowie den Verlauf der längsten Fahrt je Linie und Richtung.
 
 ## Cloudflare Tunnel
 

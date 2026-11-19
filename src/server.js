@@ -4,6 +4,7 @@ import { createWriteStream, existsSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadGtfs } from "./gtfs.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const DATA_DIR = join(ROOT, "data");
@@ -15,6 +16,10 @@ const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_BASE_URL = configuredBaseUrl(process.env.PUBLIC_BASE_URL);
 const SWU_BASE_URL = process.env.SWU_BASE_URL || "https://api.swu.de/mobility/v1";
+const GTFS_URL = process.env.GTFS_URL || "https://gtfs.swu.de/daten/SWU.zip";
+const GTFS_FILE = join(DATA_DIR, "gtfs", "SWU.zip");
+const GTFS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const GTFS_REFRESH_MS = 24 * 60 * 60 * 1000;
 const SYNC_INTERVAL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 25_000;
 const MAX_HISTORY_AGE_MS = 24 * 60 * 60 * 1000;
@@ -37,6 +42,9 @@ let snapshot = EMPTY_SNAPSHOT;
 let syncInProgress = false;
 let packageVersion = null;
 let statsPage = null;
+// Fahrplandaten aus dem GTFS-Feed; null, solange sie noch nicht geladen sind.
+let gtfs = null;
+let gtfsLoading = null;
 
 // Lookup tables and serialized response bodies derived from the snapshot.
 // Rebuilt once per sync instead of being recomputed per request.
@@ -71,6 +79,15 @@ const apiRoutes = [
   { method: "GET", path: "/api/delays?vehicleNumber=13&minutes=60", description: "Liefert Verspätungsmessungen aus dem gewählten Zeitraum." },
   { method: "GET", path: "/api/delays/average?minutes=60", description: "Berechnet die durchschnittliche Verspätung für das gesamte Netz oder optional für routeNumber bzw. vehicleNumber." },
   { method: "GET", path: "/api/sync", description: "Startet sofort eine Synchronisierung mit der SWU API." },
+  { method: "GET", path: "/api/gtfs", description: "Übersicht über den GTFS-Fahrplan: Betreiber, Feed-Version und Anzahl der Datensätze." },
+  { method: "GET", path: "/api/gtfs/stops?q=ZUP", description: "Liefert alle Haltestellen aus dem GTFS-Fahrplan; optional filterbar mit q." },
+  { method: "GET", path: "/api/gtfs/stops/ZUP", description: "Liefert eine Haltestelle mit den Linien, die sie bedienen." },
+  { method: "GET", path: "/api/gtfs/routes", description: "Liefert alle GTFS-Linien; optional filterbar mit routeId oder q." },
+  { method: "GET", path: "/api/gtfs/routes/L01", description: "Liefert eine Linie mit Haltestellenfolge je Fahrtrichtung." },
+  { method: "GET", path: "/api/gtfs/trips/L01-A-IB", description: "Liefert eine Fahrt mit allen Haltestellen und Zeiten." },
+  { method: "GET", path: "/api/gtfs/departures?stopId=ZUP&minutes=60", description: "Liefert die nächsten Abfahrten einer Haltestelle aus dem Fahrplan." },
+  { method: "GET", path: "/api/gtfs/map", description: "Liefert Haltestellen mit Koordinaten und Linienverläufe für die Netzkarte im Dashboard." },
+  { method: "GET", path: "/api/gtfs/sync", description: "Lädt den GTFS-Fahrplan neu herunter." },
   { method: "GET", path: "/api/stats", description: "Liefert Netzstatistiken mit Verteilung, Zeitverlauf sowie Bussen inklusive Linienvorschau und Prognose; optional für routeNumber, vehicleNumber, mode und minutes=all." },
   { method: "GET", path: "/api/stats/search?q=13", description: "Sucht Linien und Fahrzeuge für das Statistik-Dashboard." },
   { method: "GET", path: "/api/stats/export?dataset=routes", description: "Exportiert Linien-, Fahrzeug- oder Messwertstatistiken als CSV." },
@@ -236,6 +253,26 @@ async function syncData() {
   } finally {
     syncInProgress = false;
   }
+}
+
+// Der GTFS-Feed ist statisch und wird nur selten veröffentlicht: neu laden,
+// wenn die lokale Datei fehlt oder älter als 24 Stunden ist.
+async function refreshGtfs({ force = false } = {}) {
+  if (gtfsLoading) return gtfsLoading;
+  gtfsLoading = (async () => {
+    try {
+      gtfs = await loadGtfs({
+        sourceUrl: GTFS_URL,
+        file: GTFS_FILE,
+        maxAgeMs: force ? 0 : GTFS_MAX_AGE_MS
+      });
+      console.log(`[${gtfs.loadedAt}] gtfs: ${gtfs.routes.length} Linien, ${gtfs.stops.length} Haltestellen, ${gtfs.trips.length} Fahrten`);
+      return { reloaded: true, loadedAt: gtfs.loadedAt };
+    } finally {
+      gtfsLoading = null;
+    }
+  })();
+  return gtfsLoading;
 }
 
 async function writeJsonAtomically(file, value) {
@@ -1039,6 +1076,12 @@ function numberParam(url, name) {
   return value === null || value === "" ? null : Number(value);
 }
 
+function boundedNumber(url, name, fallback, min, max) {
+  const value = Number(url.searchParams.get(name) ?? fallback);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(Math.max(value, min), max);
+}
+
 async function handleRequest(request, response) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     response.setHeader("allow", "GET, HEAD");
@@ -1065,11 +1108,22 @@ async function handleRequest(request, response) {
     });
   }
   if (path === "/api/health") {
-    return jsonResponse(response, 200, { ok: true, syncedAt: snapshot.syncedAt, syncInProgress, partial: snapshot.partial });
+    return jsonResponse(response, 200, {
+      ok: true,
+      syncedAt: snapshot.syncedAt,
+      syncInProgress,
+      partial: snapshot.partial,
+      gtfs: gtfs
+        ? { loadedAt: gtfs.loadedAt, routes: gtfs.routes.length, stops: gtfs.stops.length, trips: gtfs.trips.length }
+        : null
+    });
   }
   if (path === "/api/sync") {
     const result = await syncData();
     return jsonResponse(response, 200, result);
+  }
+  if (path.startsWith("/api/gtfs")) {
+    return handleGtfsRequest(response, url, path);
   }
   if (path === "/stats") {
     return sendHtml(response, 200, await getStatsPage());
@@ -1239,6 +1293,134 @@ async function handleRequest(request, response) {
   return jsonResponse(response, 404, { error: "Endpunkt nicht gefunden." });
 }
 
+function gtfsUnavailable(response) {
+  return jsonResponse(response, 503, { error: "GTFS-Daten sind noch nicht geladen." });
+}
+function handleGtfsRequest(response, url, path) {
+  if (path === "/api/gtfs") {
+    if (!gtfs) return gtfsUnavailable(response);
+    return jsonResponse(response, 200, gtfs.overview());
+  }
+  if (path === "/api/gtfs/sync") {
+    return refreshGtfs({ force: true })
+      .then((result) => jsonResponse(response, 200, result))
+      .catch((error) => jsonResponse(response, 502, { error: error.message }));
+  }
+  if (!gtfs) return gtfsUnavailable(response);
+
+  if (path === "/api/gtfs/stops") {
+    const query = (url.searchParams.get("q") || "").trim();
+    const limit = url.searchParams.has("limit") ? boundedNumber(url, "limit", 1000, 1, 1000) : null;
+    const data = gtfs.searchStops(query, limit).map((stop) => ({
+      ...stop,
+      routes: gtfs.routesAtStop(stop.stopId).map((route) => route.shortName ?? route.routeId)
+    }));
+    return jsonResponse(response, 200, { loadedAt: gtfs.loadedAt, data });
+  }
+  const stopMatch = path.match(/^\/api\/gtfs\/stops\/([^/]+)$/);
+  if (stopMatch) {
+    const stop = gtfs.stop(decodeURIComponent(stopMatch[1]));
+    if (!stop) return jsonResponse(response, 404, { error: "Haltestelle nicht gefunden." });
+    return jsonResponse(response, 200, { loadedAt: gtfs.loadedAt, stop, routes: gtfs.routesAtStop(stop.stopId) });
+  }
+  if (path === "/api/gtfs/routes") {
+    const routeId = url.searchParams.get("routeId");
+    const query = (url.searchParams.get("q") || "").trim();
+    const data = routeId
+      ? gtfs.searchRoutes("").filter((route) => route.routeId === routeId)
+      : gtfs.searchRoutes(query);
+    return jsonResponse(response, 200, { loadedAt: gtfs.loadedAt, data });
+  }
+  const routeMatch = path.match(/^\/api\/gtfs\/routes\/([^/]+)$/);
+  if (routeMatch) {
+    const route = gtfs.route(decodeURIComponent(routeMatch[1]));
+    if (!route) return jsonResponse(response, 404, { error: "Linie nicht gefunden." });
+    return jsonResponse(response, 200, {
+      loadedAt: gtfs.loadedAt,
+      route,
+      directions: gtfs.routeVariants(route.routeId)
+    });
+  }
+  const tripMatch = path.match(/^\/api\/gtfs\/trips\/([^/]+)$/);
+  if (tripMatch) {
+    const trip = gtfs.trip(decodeURIComponent(tripMatch[1]));
+    if (!trip) return jsonResponse(response, 404, { error: "Fahrt nicht gefunden." });
+    return jsonResponse(response, 200, { loadedAt: gtfs.loadedAt, trip });
+  }
+  if (path === "/api/gtfs/departures") {
+    const stopId = url.searchParams.get("stopId") ?? url.searchParams.get("stop");
+    if (!stopId) return jsonResponse(response, 400, { error: "Parameter stopId fehlt." });
+    const stop = gtfs.stop(stopId);
+    if (!stop) return jsonResponse(response, 404, { error: "Haltestelle nicht gefunden." });
+    const minutes = boundedNumber(url, "minutes", 120, 1, 1440);
+    const limit = boundedNumber(url, "limit", 30, 1, 500);
+    const now = Date.now();
+    return jsonResponse(response, 200, {
+      loadedAt: gtfs.loadedAt,
+      stop: { stopId: stop.stopId, name: stop.name },
+      generatedAt: new Date(now).toISOString(),
+      minutes,
+      departures: gtfs.departures(stop.stopId, { now, minutes, limit })
+    });
+  }
+  if (path === "/api/gtfs/map") {
+    return jsonResponse(response, 200, gtfsMap());
+  }
+  return jsonResponse(response, 404, { error: "Endpunkt nicht gefunden." });
+}
+
+function roundCoordinate(value) {
+  return Math.round(value * 100_000) / 100_000;
+}
+
+// Netzkarte für das Dashboard: Haltestellen mit Koordinaten und die
+// Linienverläufe aus dem Fahrplan (längste Fahrt je Richtung).
+function gtfsMap() {
+  const stops = [];
+  const seen = new Set();
+  for (const stop of gtfs.stops) {
+    if (!Number.isFinite(stop.lat) || !Number.isFinite(stop.lon)) continue;
+    // Gegenüberliegende Steige liegen teils auf denselben Koordinaten und
+    // würden sich auf der Karte nur überdecken.
+    const key = `${stop.lat.toFixed(5)}:${stop.lon.toFixed(5)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    stops.push({
+      stopId: stop.stopId,
+      name: stop.name,
+      lat: roundCoordinate(stop.lat),
+      lon: roundCoordinate(stop.lon)
+    });
+  }
+  const lines = [];
+  for (const route of gtfs.routes) {
+    const mode = route.type === 0 ? "tram" : route.type === 3 ? "bus" : "other";
+    for (const variant of gtfs.routeVariants(route.routeId)) {
+      const points = [];
+      for (const entry of variant.stops) {
+        const stop = gtfs.stop(entry.stopId);
+        if (!stop || !Number.isFinite(stop.lat) || !Number.isFinite(stop.lon)) continue;
+        const point = [roundCoordinate(stop.lat), roundCoordinate(stop.lon)];
+        const last = points[points.length - 1];
+        if (last && last[0] === point[0] && last[1] === point[1]) continue;
+        points.push(point);
+      }
+      if (points.length < 2) continue;
+      lines.push({
+        routeId: route.routeId,
+        line: route.shortName ?? route.routeId,
+        longName: route.longName ?? null,
+        mode,
+        color: route.color ? `#${route.color}` : null,
+        directionId: variant.directionId,
+        headsign: variant.headsigns[0] ?? null,
+        points
+      });
+    }
+  }
+  return { loadedAt: gtfs.loadedAt, stops, lines };
+}
+
 async function start() {
   await mkdir(DATA_DIR, { recursive: true });
   await getPackageVersion();
@@ -1252,9 +1434,20 @@ async function start() {
     }
   }
   await ensureHistoryLoaded();
+  if (process.argv.includes("--gtfs-only")) {
+    await refreshGtfs({ force: true });
+    return;
+  }
   if (process.argv.includes("--sync-only")) {
     await syncData();
     return;
+  }
+  // Der Fahrplan ist auch ohne Live-Daten nutzbar; ein Fehler beim GTFS-Laden
+  // darf den Serverstart deshalb nicht verhindern.
+  try {
+    await refreshGtfs();
+  } catch (error) {
+    console.error(`GTFS-Daten konnten nicht geladen werden: ${error.message}`);
   }
   const server = createServer((request, response) => {
     handleRequest(request, response).catch((error) => {
@@ -1267,11 +1460,14 @@ async function start() {
   server.keepAliveTimeout = 60_000;
   server.headersTimeout = 66_000;
   const syncTimer = setInterval(() => syncData().catch((error) => console.error(`sync failed: ${error.message}`)), SYNC_INTERVAL_MS);
+  const gtfsTimer = setInterval(() => refreshGtfs().catch((error) => console.error(`gtfs failed: ${error.message}`)), GTFS_REFRESH_MS);
+  gtfsTimer.unref();
   // Service managers and containers stop the process with SIGTERM: finish
   // in-flight requests and history writes before exiting.
   const shutdown = (signal) => {
     console.log(`${signal} empfangen, Server wird beendet.`);
     clearInterval(syncTimer);
+    clearInterval(gtfsTimer);
     server.close(() => process.exit(0));
     server.closeIdleConnections?.();
     setTimeout(() => process.exit(0), 10_000).unref();
