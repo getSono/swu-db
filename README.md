@@ -32,6 +32,28 @@ Eine einmalige Synchronisierung ist mit `npm run sync` möglich.
 - `GET /api/delays/average?routeNumber=201&minutes=60` – durchschnittliche Verspätung einer Linie
 - `GET /api/delays/average?vehicleNumber=13&minutes=60` – durchschnittliche Verspätung eines Fahrzeugs
 - `GET /api/sync` – sofortige Synchronisierung auslösen
+- `GET /stats` – HTML-Dashboard mit Diagrammen zum Netz, zu Linien und zu Fahrzeugen
+- `GET /api/stats?minutes=180` – Statistiken für das gesamte Netz
+- `GET /api/stats?routeNumber=201&minutes=180` – Statistiken einer Linie
+- `GET /api/stats?vehicleNumber=13&minutes=180` – Statistiken eines Fahrzeugs
+- `GET /api/stats?minutes=all` – gesamter gespeicherter Verlauf (die Historie wird nach 24 Stunden bereinigt)
+- `GET /api/stats?mode=bus` – nur Busse, `mode=tram` nur Straßenbahnen
+- `GET /api/stats/search?q=13` – Linien und Fahrzeuge für das Dashboard suchen
+- `GET /api/stats/export?dataset=routes` – CSV-Export der Linien; `dataset=vehicles` für Fahrzeuge, `dataset=delays` für die Messwerte
+
+## Dashboard
+
+Unter `http://localhost:3000/stats` liegt ein Dashboard mit Kennzahlen und
+Diagrammen zur Verspätung im gesamten Netz. Über das Suchfeld lassen sich
+Linien und Fahrzeuge auswählen, für die dieselben Statistiken separat
+angezeigt werden. Der Zeitraum ist zwischen einer Stunde und 24 Stunden
+wählbar, mit „Allzeit“ wird der gesamte gespeicherte Verlauf ausgewertet.
+Straßenbahnen und Busse lassen sich getrennt filtern und werden zusätzlich
+direkt gegenübergestellt. Eine Karte „Busse unterwegs“ zeigt für jeden Bus die
+nächsten Halte als Linienvorschau und eine Verspätungsprognose – aus den
+SWU-Livewerten je Haltestelle, sonst aus dem Trend der letzten 45 Minuten.
+Statistik und Messwerte stehen als CSV-Export zur Verfügung
+(Semikolon-getrennt, UTF-8 mit BOM für Excel).
 
 Die SWU-URL kann für Tests überschrieben werden:
 

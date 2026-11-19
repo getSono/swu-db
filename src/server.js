@@ -10,6 +10,7 @@ const DATA_DIR = join(ROOT, "data");
 const SNAPSHOT_FILE = join(DATA_DIR, "latest.json");
 const HISTORY_FILE = join(DATA_DIR, "delay-history.jsonl");
 const PACKAGE_FILE = join(ROOT, "package.json");
+const STATS_PAGE_FILE = join(ROOT, "src", "stats.html");
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_BASE_URL = configuredBaseUrl(process.env.PUBLIC_BASE_URL);
@@ -35,6 +36,7 @@ const EMPTY_SNAPSHOT = {
 let snapshot = EMPTY_SNAPSHOT;
 let syncInProgress = false;
 let packageVersion = null;
+let statsPage = null;
 
 // Lookup tables and serialized response bodies derived from the snapshot.
 // Rebuilt once per sync instead of being recomputed per request.
@@ -42,6 +44,8 @@ const snapshotIndex = {
   vehiclesByNumber: new Map(),
   routesByNumber: new Map(),
   tripsByVehicle: new Map(),
+  passagesByVehicle: new Map(),
+  busRouteByVehicle: new Map(),
   bodies: new Map()
 };
 
@@ -66,7 +70,11 @@ const apiRoutes = [
   { method: "GET", path: "/api/search?q=13", description: "Sucht nach Fahrzeugnummer oder Fahrzeugname und liefert zugehörige Linien und Verzögerungen." },
   { method: "GET", path: "/api/delays?vehicleNumber=13&minutes=60", description: "Liefert Verspätungsmessungen aus dem gewählten Zeitraum." },
   { method: "GET", path: "/api/delays/average?minutes=60", description: "Berechnet die durchschnittliche Verspätung für das gesamte Netz oder optional für routeNumber bzw. vehicleNumber." },
-  { method: "GET", path: "/api/sync", description: "Startet sofort eine Synchronisierung mit der SWU API." }
+  { method: "GET", path: "/api/sync", description: "Startet sofort eine Synchronisierung mit der SWU API." },
+  { method: "GET", path: "/api/stats", description: "Liefert Netzstatistiken mit Verteilung, Zeitverlauf sowie Bussen inklusive Linienvorschau und Prognose; optional für routeNumber, vehicleNumber, mode und minutes=all." },
+  { method: "GET", path: "/api/stats/search?q=13", description: "Sucht Linien und Fahrzeuge für das Statistik-Dashboard." },
+  { method: "GET", path: "/api/stats/export?dataset=routes", description: "Exportiert Linien-, Fahrzeug- oder Messwertstatistiken als CSV." },
+  { method: "GET", path: "/stats", description: "HTML-Dashboard mit Diagrammen zum gesamten Netz sowie zu einzelnen Linien und Fahrzeugen." }
 ];
 
 async function getPackageVersion() {
@@ -92,12 +100,19 @@ function installSnapshot(next) {
   snapshotIndex.vehiclesByNumber.clear();
   snapshotIndex.routesByNumber.clear();
   snapshotIndex.tripsByVehicle.clear();
+  snapshotIndex.passagesByVehicle.clear();
+  snapshotIndex.busRouteByVehicle.clear();
   for (const vehicle of snapshot.vehicles) snapshotIndex.vehiclesByNumber.set(vehicle.VehicleNumber, vehicle);
   for (const route of snapshot.routes) snapshotIndex.routesByNumber.set(route.RouteNumber, route);
   for (const trip of snapshot.trips) {
     const bucket = snapshotIndex.tripsByVehicle.get(trip.VehicleNumber);
     if (bucket) bucket.push(trip);
     else snapshotIndex.tripsByVehicle.set(trip.VehicleNumber, [trip]);
+  }
+  for (const passage of snapshot.passages) {
+    const bucket = snapshotIndex.passagesByVehicle.get(passage.VehicleNumber);
+    if (bucket) bucket.push(passage);
+    else snapshotIndex.passagesByVehicle.set(passage.VehicleNumber, [passage]);
   }
 }
 
@@ -370,6 +385,600 @@ async function rewriteHistoryFile() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Statistics for the /stats dashboard
+// ---------------------------------------------------------------------------
+
+// Deviation buckets in seconds; "from" is inclusive, "to" is exclusive.
+const STATS_BUCKETS = [
+  { label: "über 5 Min zu früh", from: -Infinity, to: -300 },
+  { label: "2–5 Min zu früh", from: -300, to: -120 },
+  { label: "0–2 Min zu früh", from: -120, to: 0 },
+  { label: "0–2 Min zu spät", from: 0, to: 120 },
+  { label: "2–5 Min zu spät", from: 120, to: 300 },
+  { label: "über 5 Min zu spät", from: 300, to: Infinity }
+];
+const TIMELINE_BUCKET_MS = 5 * 60_000;
+const PUNCTUAL_MIN_SECONDS = -60;
+const PUNCTUAL_MAX_SECONDS = 180;
+const MAX_STATS_ROWS = 20;
+const MODE_LABELS = { tram: "Straßenbahn", bus: "Bus", other: "Unbekannt" };
+
+// SWU marks trams with VehicleCategory/RouteCategory 1 and buses with 5;
+// missing or other values stay unknown.
+function modeFromCategory(category) {
+  if (category === 1) return "tram";
+  if (category === 5) return "bus";
+  return "other";
+}
+
+function modeOfRecord(record) {
+  const vehicle = snapshotIndex.vehiclesByNumber.get(record.vehicleNumber);
+  return modeFromCategory(vehicle?.VehicleCategory ?? null);
+}
+
+// Number(null) is 0, so a missing deviation must be filtered explicitly
+// instead of being counted as an on-time measurement.
+function deviationOf(record) {
+  const value = record.deviation;
+  if (value === null || value === undefined || value === "") return null;
+  const deviation = Number(value);
+  return Number.isFinite(deviation) ? deviation : null;
+}
+
+function dominantMode(counts) {
+  if (counts.tram > 0 && counts.tram >= counts.bus) return "tram";
+  if (counts.bus > 0) return "bus";
+  return "other";
+}
+
+function countByMode(items, categoryOf) {
+  const counts = { tram: 0, bus: 0, other: 0 };
+  for (const item of items) counts[modeFromCategory(categoryOf(item))]++;
+  return counts;
+}
+
+function summarizeByMode(records) {
+  const buckets = new Map();
+  for (const record of records) {
+    const deviation = deviationOf(record);
+    if (deviation === null) continue;
+    const mode = modeOfRecord(record);
+    let bucket = buckets.get(mode);
+    if (!bucket) {
+      bucket = { deviations: [], vehicles: new Set(), routes: new Set() };
+      buckets.set(mode, bucket);
+    }
+    bucket.deviations.push(deviation);
+    if (record.vehicleNumber !== null && record.vehicleNumber !== undefined) bucket.vehicles.add(record.vehicleNumber);
+    if (record.routeNumber !== null && record.routeNumber !== undefined) bucket.routes.add(record.routeNumber);
+  }
+  return ["tram", "bus", "other"]
+    .filter((mode) => buckets.has(mode))
+    .map((mode) => {
+      const bucket = buckets.get(mode);
+      return {
+        mode,
+        label: MODE_LABELS[mode],
+        vehicles: bucket.vehicles.size,
+        routes: bucket.routes.size,
+        ...summarizeDeviations(bucket.deviations)
+      };
+    });
+}
+
+function roundValue(value, digits = 1) {
+  if (!Number.isFinite(value)) return null;
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function medianOf(sorted) {
+  if (!sorted.length) return null;
+  return sorted[Math.ceil(sorted.length / 2) - 1];
+}
+
+function summarizeDeviations(deviations) {
+  if (!deviations.length) {
+    return {
+      samples: 0,
+      averageDelaySeconds: null,
+      averageDelayMinutes: null,
+      medianDelaySeconds: null,
+      punctualPercent: null,
+      earlyPercent: null,
+      latePercent: null,
+      minDelaySeconds: null,
+      maxDelaySeconds: null
+    };
+  }
+  let sum = 0;
+  let punctual = 0;
+  let early = 0;
+  let late = 0;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const deviation of deviations) {
+    sum += deviation;
+    if (deviation < min) min = deviation;
+    if (deviation > max) max = deviation;
+    if (deviation < PUNCTUAL_MIN_SECONDS) early++;
+    else if (deviation > PUNCTUAL_MAX_SECONDS) late++;
+    else punctual++;
+  }
+  const average = sum / deviations.length;
+  const sorted = deviations.slice().sort((a, b) => a - b);
+  return {
+    samples: deviations.length,
+    averageDelaySeconds: roundValue(average),
+    averageDelayMinutes: roundValue(average / 60, 2),
+    medianDelaySeconds: roundValue(medianOf(sorted)),
+    punctualPercent: roundValue((punctual / deviations.length) * 100),
+    earlyPercent: roundValue((early / deviations.length) * 100),
+    latePercent: roundValue((late / deviations.length) * 100),
+    minDelaySeconds: min,
+    maxDelaySeconds: max
+  };
+}
+
+function delayHistogram(deviations) {
+  const histogram = STATS_BUCKETS.map((bucket) => ({ label: bucket.label, count: 0 }));
+  for (const deviation of deviations) {
+    const index = STATS_BUCKETS.findIndex((bucket) => deviation >= bucket.from && deviation < bucket.to);
+    if (index !== -1) histogram[index].count++;
+  }
+  return histogram;
+}
+
+// Buckets without measurements keep a null average so the chart shows a gap
+// instead of pretending the delay was zero.
+function buildTimeline(records) {
+  const buckets = new Map();
+  for (const record of records) {
+    const deviation = deviationOf(record);
+    if (deviation === null) continue;
+    const time = Date.parse(record.timestamp);
+    if (!Number.isFinite(time)) continue;
+    const bucketStart = Math.floor(time / TIMELINE_BUCKET_MS) * TIMELINE_BUCKET_MS;
+    const bucket = buckets.get(bucketStart);
+    if (bucket) {
+      bucket.sum += deviation;
+      bucket.count++;
+    } else {
+      buckets.set(bucketStart, { sum: deviation, count: 1 });
+    }
+  }
+  if (!buckets.size) return [];
+  const starts = [...buckets.keys()].sort((a, b) => a - b);
+  const points = [];
+  for (let start = starts[0]; start <= starts[starts.length - 1]; start += TIMELINE_BUCKET_MS) {
+    const bucket = buckets.get(start);
+    points.push({
+      timestamp: new Date(start).toISOString(),
+      averageDelaySeconds: bucket ? roundValue(bucket.sum / bucket.count) : null,
+      samples: bucket ? bucket.count : 0
+    });
+  }
+  return points;
+}
+
+function groupDeviations(records, keyOf) {
+  const groups = new Map();
+  for (const record of records) {
+    const key = keyOf(record);
+    if (key === null || key === undefined) continue;
+    const deviation = deviationOf(record);
+    if (deviation === null) continue;
+    let group = groups.get(key);
+    if (!group) {
+      group = { deviations: [], modes: { tram: 0, bus: 0, other: 0 } };
+      groups.set(key, group);
+    }
+    group.deviations.push(deviation);
+    group.modes[modeOfRecord(record)]++;
+  }
+  return [...groups.entries()].map(([key, group]) => ({
+    key,
+    modes: group.modes,
+    ...summarizeDeviations(group.deviations)
+  }));
+}
+
+function routeNameFor(routeNumber) {
+  return snapshotIndex.routesByNumber.get(routeNumber)?.RouteName ?? String(routeNumber);
+}
+
+function vehicleNameFor(vehicleNumber) {
+  return snapshotIndex.vehiclesByNumber.get(vehicleNumber)?.VehicleName ?? null;
+}
+
+function routeDetails(routeNumber) {
+  const route = snapshotIndex.routesByNumber.get(routeNumber);
+  if (!route) return null;
+  const stopNumbers = new Set();
+  const stopPointCodes = new Set();
+  for (const pattern of route.RoutePattern ?? []) {
+    for (const stopPoint of pattern.StopPoints ?? []) {
+      if (stopPoint.StopNumber !== undefined) stopNumbers.add(stopPoint.StopNumber);
+      if (stopPoint.StopPointCode) stopPointCodes.add(stopPoint.StopPointCode);
+    }
+  }
+  return {
+    type: "route",
+    routeNumber: route.RouteNumber,
+    routeName: routeNameFor(route.RouteNumber),
+    category: route.RouteCategory ?? null,
+    mode: modeFromCategory(route.RouteCategory ?? null),
+    directions: (route.RouteDirections ?? []).map((direction) => direction.DirectionName ?? String(direction.Direction)),
+    patterns: (route.RoutePattern ?? []).length,
+    stopCount: stopNumbers.size,
+    stopPointCount: stopPointCodes.size
+  };
+}
+
+function vehicleDetails(vehicleNumber, records) {
+  const vehicle = snapshotIndex.vehiclesByNumber.get(vehicleNumber) ?? null;
+  const trip = (snapshotIndex.tripsByVehicle.get(vehicleNumber) ?? [])[0] ?? null;
+  const routeNumbers = [...new Set(records.map((record) => record.routeNumber).filter((number) => number !== null))];
+  return {
+    type: "vehicle",
+    vehicleNumber,
+    vehicleName: vehicle?.VehicleName ?? null,
+    category: vehicle?.VehicleCategory ?? null,
+    mode: modeFromCategory(vehicle?.VehicleCategory ?? null),
+    make: vehicle?.ModelData?.Make ?? null,
+    model: vehicle?.ModelData?.Model ?? null,
+    seats: vehicle?.CapacityData?.Seats ?? null,
+    standingSpaces: vehicle?.CapacityData?.StandingSpaces ?? null,
+    wheelchairSpaces: vehicle?.CapacityData?.WheelChairSpaces ?? null,
+    lengthMm: vehicle?.TechnicalData?.["Length(mm)"] ?? null,
+    isActive: trip?.IsActive ?? false,
+    known: vehicle !== null,
+    routes: routeNumbers.map((number) => ({ routeNumber: number, routeName: routeNameFor(number) }))
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Buses with route preview and delay forecast for the /stats card
+// ---------------------------------------------------------------------------
+
+const MAX_BUSES = 40;
+const BUS_PREVIEW_STOPS = 6;
+const BUS_FORECAST_MINUTES = 10;
+const BUS_TREND_WINDOW_MINUTES = 45;
+const BUS_TREND_MIN_SAMPLES = 4;
+const BUS_TREND_MIN_SPAN_MINUTES = 5;
+const BUS_MAX_TREND_SECONDS_PER_MINUTE = 10;
+const BUS_UPCOMING_MAX_MINUTES = 180;
+const BUS_CURRENT_GRACE_SECONDS = 120;
+
+function passageDeviation(passage) {
+  const value = passage.DepartureDeviation ?? passage.ArrivalDeviation;
+  if (value === null || value === undefined || value === "") return null;
+  const deviation = Number(value);
+  return Number.isFinite(deviation) ? deviation : null;
+}
+
+function passageScheduledTime(passage) {
+  const time = Date.parse(passage.DepartureTimeScheduled ?? passage.ArrivalTimeScheduled ?? "");
+  return Number.isFinite(time) ? time : null;
+}
+
+// Passages carry no RouteNumber, so the route is derived from the stop points
+// of the vehicle's trip: the bus route whose pattern contains the most of them.
+function busRouteForVehicle(vehicleNumber, passages) {
+  const cached = snapshotIndex.busRouteByVehicle.get(vehicleNumber);
+  if (cached !== undefined) return cached;
+  const codes = new Set();
+  for (const passage of passages) {
+    if (passage.StopPointCode) codes.add(passage.StopPointCode);
+  }
+  let best = null;
+  for (const route of snapshot.routes) {
+    if (route.RouteCategory !== 5 || !route.RouteNumber) continue;
+    let score = 0;
+    for (const pattern of route.RoutePattern ?? []) {
+      let hits = 0;
+      for (const stopPoint of pattern.StopPoints ?? []) {
+        if (codes.has(stopPoint.StopPointCode)) hits++;
+      }
+      if (hits > score) score = hits;
+    }
+    if (!best || score > best.score) {
+      best = { routeNumber: route.RouteNumber, score };
+    }
+  }
+  const match = best && best.score >= 3 ? best.routeNumber : null;
+  snapshotIndex.busRouteByVehicle.set(vehicleNumber, match);
+  return match;
+}
+
+// Least-squares trend of the vehicle's recent measurements in seconds per
+// minute. Few or very new samples yield no trend instead of a noisy one.
+function vehicleDelayTrend(vehicleNumber, referenceTime) {
+  const records = history.byVehicle.get(vehicleNumber) ?? [];
+  if (!records.length) return { slope: null, samples: 0 };
+  const cutoffIso = new Date(referenceTime - BUS_TREND_WINDOW_MINUTES * 60_000).toISOString();
+  const start = firstIndexAtOrAfter(records, cutoffIso);
+  const points = [];
+  for (let i = start; i < records.length; i++) {
+    const time = Date.parse(records[i].timestamp);
+    if (!Number.isFinite(time) || time > referenceTime) continue;
+    const deviation = deviationOf(records[i]);
+    if (deviation === null) continue;
+    points.push({ minutes: (time - referenceTime) / 60_000, deviation });
+  }
+  if (points.length < BUS_TREND_MIN_SAMPLES) return { slope: null, samples: points.length };
+  const first = points[0];
+  const last = points[points.length - 1];
+  if (last.minutes - first.minutes < BUS_TREND_MIN_SPAN_MINUTES) {
+    return { slope: null, samples: points.length };
+  }
+  let sumX = 0;
+  let sumY = 0;
+  let sumXY = 0;
+  let sumXX = 0;
+  for (const point of points) {
+    sumX += point.minutes;
+    sumY += point.deviation;
+    sumXY += point.minutes * point.deviation;
+    sumXX += point.minutes * point.minutes;
+  }
+  const count = points.length;
+  const denominator = count * sumXX - sumX * sumX;
+  if (!Number.isFinite(denominator) || denominator === 0) {
+    return { slope: null, samples: count };
+  }
+  const slope = (count * sumXY - sumX * sumY) / denominator;
+  return {
+    slope: roundValue(Math.max(-BUS_MAX_TREND_SECONDS_PER_MINUTE, Math.min(BUS_MAX_TREND_SECONDS_PER_MINUTE, slope)), 2),
+    samples: count
+  };
+}
+
+function computeBuses({ routeNumber, vehicleNumber, mode }) {
+  const referenceIso = snapshot.syncedAt;
+  const referenceTime = referenceIso ? Date.parse(referenceIso) : NaN;
+  if (mode === "tram" || !Number.isFinite(referenceTime)) {
+    return { referenceTime: referenceIso ?? null, total: 0, items: [] };
+  }
+  const items = [];
+  for (const vehicle of snapshot.vehicles) {
+    if (vehicle.VehicleCategory !== 5) continue;
+    if (vehicleNumber !== null && vehicle.VehicleNumber !== vehicleNumber) continue;
+    const passages = (snapshotIndex.passagesByVehicle.get(vehicle.VehicleNumber) ?? [])
+      .filter((passage) => passageScheduledTime(passage) !== null)
+      .sort((a, b) => passageScheduledTime(a) - passageScheduledTime(b));
+    if (!passages.length) continue;
+    const startIndex = passages.findIndex((passage) =>
+      passageScheduledTime(passage) >= referenceTime - BUS_CURRENT_GRACE_SECONDS * 1000);
+    if (startIndex === -1) continue;
+    if (passageScheduledTime(passages[startIndex]) > referenceTime + BUS_UPCOMING_MAX_MINUTES * 60_000) continue;
+
+    const matchedRouteNumber = busRouteForVehicle(vehicle.VehicleNumber, passages);
+    if (routeNumber !== null && matchedRouteNumber !== routeNumber) continue;
+
+    const current = passages[startIndex];
+    const currentDelay = passageDeviation(current);
+    const trend = vehicleDelayTrend(vehicle.VehicleNumber, referenceTime);
+    const direction = current.DepartureDirectionText ?? current.ArrivalDirectionText ?? null;
+    const stops = passages.slice(startIndex, startIndex + BUS_PREVIEW_STOPS).map((passage) => {
+      const scheduled = passageScheduledTime(passage);
+      const live = passageDeviation(passage);
+      const minutesAhead = (scheduled - referenceTime) / 60_000;
+      const projected = live === null && currentDelay !== null && trend.slope !== null
+        ? Math.round(currentDelay + trend.slope * Math.max(minutesAhead, 0))
+        : null;
+      return {
+        stopName: passage.StopName ?? null,
+        platformName: passage.PlatformName ?? null,
+        scheduledTime: new Date(scheduled).toISOString(),
+        minutesAhead: roundValue(minutesAhead, 1),
+        delaySeconds: live ?? projected,
+        live: live !== null
+      };
+    });
+
+    // Prefer the operator's live prediction for a stop around ten minutes out,
+    // otherwise extrapolate the measured trend from the current delay.
+    const target = stops.find((stop) => stop.live && stop.minutesAhead >= BUS_FORECAST_MINUTES * 0.8 && stop.minutesAhead <= BUS_FORECAST_MINUTES * 2.5);
+    let forecastDelaySeconds = null;
+    let forecastBasis = "none";
+    if (target) {
+      forecastDelaySeconds = target.delaySeconds;
+      forecastBasis = "live";
+    } else if (currentDelay !== null && trend.slope !== null) {
+      forecastDelaySeconds = Math.round(currentDelay + trend.slope * BUS_FORECAST_MINUTES);
+      forecastBasis = "trend";
+    } else if (currentDelay !== null) {
+      forecastDelaySeconds = currentDelay;
+      forecastBasis = "current";
+    }
+
+    items.push({
+      vehicleNumber: vehicle.VehicleNumber,
+      vehicleName: vehicle.VehicleName ?? null,
+      routeNumber: matchedRouteNumber,
+      routeName: matchedRouteNumber !== null ? routeNameFor(matchedRouteNumber) : null,
+      direction,
+      currentStop: current.StopName ?? null,
+      scheduledTime: stops[0].scheduledTime,
+      currentDelaySeconds: currentDelay,
+      trendSecondsPerMinute: trend.slope,
+      trendSamples: trend.samples,
+      forecast: {
+        minutesAhead: BUS_FORECAST_MINUTES,
+        delaySeconds: forecastDelaySeconds,
+        basis: forecastBasis
+      },
+      stops
+    });
+  }
+  items.sort((a, b) => {
+    const routeA = a.routeNumber ?? Number.MAX_SAFE_INTEGER;
+    const routeB = b.routeNumber ?? Number.MAX_SAFE_INTEGER;
+    if (routeA !== routeB) return routeA - routeB;
+    return Date.parse(a.scheduledTime) - Date.parse(b.scheduledTime);
+  });
+  return {
+    referenceTime: referenceIso,
+    total: items.length,
+    items: items.slice(0, MAX_BUSES)
+  };
+}
+
+function statsWindow(allTime, minutes) {
+  if (allTime) return { start: 0, cutoff: null };
+  return delayWindow(minutes);
+}
+
+function statsRecords({ start, routeNumber, vehicleNumber, mode }) {
+  const scoped = [];
+  const all = history.records;
+  for (let i = start; i < all.length; i++) {
+    const record = all[i];
+    if (routeNumber !== null && record.routeNumber !== routeNumber) continue;
+    if (vehicleNumber !== null && record.vehicleNumber !== vehicleNumber) continue;
+    scoped.push(record);
+  }
+  return {
+    scoped,
+    records: mode === "all" ? scoped : scoped.filter((record) => modeOfRecord(record) === mode)
+  };
+}
+
+function computeStats({ allTime, minutes, routeNumber, vehicleNumber, mode }) {
+  const { start, cutoff } = statsWindow(allTime, minutes);
+  const { scoped, records } = statsRecords({ start, routeNumber, vehicleNumber, mode });
+  const deviations = [];
+  for (const record of records) {
+    const deviation = deviationOf(record);
+    if (deviation !== null) deviations.push(deviation);
+  }
+
+  const byDelay = (a, b) => (b.averageDelaySeconds ?? 0) - (a.averageDelaySeconds ?? 0);
+  const routes = groupDeviations(records, (record) => record.routeNumber)
+    .map(({ key, modes, ...group }) => ({
+      routeNumber: key,
+      routeName: routeNameFor(key),
+      mode: dominantMode(modes),
+      ...group
+    }))
+    .sort(byDelay)
+    .slice(0, MAX_STATS_ROWS);
+  const vehicles = groupDeviations(records, (record) => record.vehicleNumber)
+    .map(({ key, modes, ...group }) => ({
+      vehicleNumber: key,
+      vehicleName: vehicleNameFor(key),
+      mode: modeFromCategory(snapshotIndex.vehiclesByNumber.get(key)?.VehicleCategory ?? null),
+      ...group
+    }))
+    .sort(byDelay)
+    .slice(0, MAX_STATS_ROWS);
+
+  const scope = vehicleNumber !== null
+    ? { type: "vehicle", vehicleNumber, mode }
+    : routeNumber !== null
+      ? { type: "route", routeNumber, mode }
+      : { type: "network", mode };
+
+  return {
+    syncedAt: snapshot.syncedAt,
+    generatedAt: new Date().toISOString(),
+    window: {
+      minutes: allTime ? null : minutes,
+      allTime,
+      since: allTime ? history.records[0]?.timestamp ?? null : new Date(cutoff).toISOString(),
+      until: new Date().toISOString()
+    },
+    scope,
+    network: {
+      routes: snapshot.routes.length,
+      vehicles: snapshot.vehicles.length,
+      activeVehicles: snapshot.trips.filter((trip) => trip.IsActive === true).length,
+      stops: snapshot.stops.length,
+      stopPoints: snapshot.stopPoints.length,
+      passages: snapshot.passages.length,
+      vehiclesByMode: countByMode(snapshot.vehicles, (vehicle) => vehicle.VehicleCategory),
+      routesByMode: countByMode(snapshot.routes, (route) => route.RouteCategory)
+    },
+    summary: summarizeDeviations(deviations),
+    histogram: delayHistogram(deviations),
+    timeline: buildTimeline(records),
+    modeBreakdown: summarizeByMode(scoped),
+    routes,
+    vehicles,
+    buses: computeBuses({ routeNumber, vehicleNumber, mode }),
+    details: vehicleNumber !== null
+      ? vehicleDetails(vehicleNumber, records)
+      : routeNumber !== null
+        ? routeDetails(routeNumber)
+        : null
+  };
+}
+
+function statsOptions(url) {
+  const rawMinutes = url.searchParams.get("minutes") || "180";
+  const allTime = rawMinutes === "all";
+  const modeParam = url.searchParams.get("mode");
+  return {
+    allTime,
+    minutes: allTime ? null : Math.min(Math.max(Number(rawMinutes), 1), 1440),
+    routeNumber: numberParam(url, "routeNumber"),
+    vehicleNumber: numberParam(url, "vehicleNumber"),
+    mode: modeParam === "tram" || modeParam === "bus" ? modeParam : "all"
+  };
+}
+
+function statsOptionsError(options) {
+  if (options.routeNumber !== null && !Number.isFinite(options.routeNumber)) return "Ungültige Liniennummer.";
+  if (options.vehicleNumber !== null && !Number.isFinite(options.vehicleNumber)) return "Ungültige Fahrzeugnummer.";
+  if (!options.allTime && !Number.isFinite(options.minutes)) return "Ungültige Zeitangabe.";
+  return null;
+}
+
+const EXPORT_DATASETS = ["delays", "routes", "vehicles"];
+const DELAY_CSV_HEADER = ["Zeitstempel", "Fahrzeug", "Linie", "Verkehrsmittel", "Abweichung_Sekunden", "Quelle"];
+const STATS_CSV_HEADER = ["Messungen", "Durchschnitt_Sekunden", "Durchschnitt_Minuten", "Median_Sekunden", "Puenktlich_Prozent", "ZuFrueh_Prozent", "ZuSpaet_Prozent", "Maximum_Sekunden"];
+
+function csvCell(value) {
+  const text = value === null || value === undefined ? "" : String(value);
+  return /[";\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function csvNumber(value) {
+  return Number.isFinite(value) ? String(value).replace(".", ",") : "";
+}
+
+// German Excel reads UTF-8 CSV with BOM and semicolon separators correctly.
+function sendCsv(response, filename, header, rows) {
+  const body = Buffer.from("\uFEFF" + [header, ...rows].map((row) => row.map(csvCell).join(";")).join("\r\n") + "\r\n", "utf8");
+  response.writeHead(200, {
+    "content-type": "text/csv; charset=utf-8",
+    "content-disposition": `attachment; filename="${filename}"`,
+    "cache-control": "no-store"
+  });
+  response.end(response.req?.method === "HEAD" ? undefined : body);
+}
+
+function statsCsvNumbers(row) {
+  return [
+    row.samples,
+    csvNumber(row.averageDelaySeconds),
+    csvNumber(row.averageDelayMinutes),
+    csvNumber(row.medianDelaySeconds),
+    csvNumber(row.punctualPercent),
+    csvNumber(row.earlyPercent),
+    csvNumber(row.latePercent),
+    csvNumber(row.maxDelaySeconds)
+  ];
+}
+
+async function getStatsPage() {
+  if (statsPage === null) statsPage = await readFile(STATS_PAGE_FILE, "utf8");
+  return statsPage;
+}
+
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
@@ -415,6 +1024,16 @@ function jsonResponse(response, status, value) {
   sendBuffer(response, status, Buffer.from(JSON.stringify(value)));
 }
 
+const HTML_HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "cache-control": "no-cache"
+};
+
+function sendHtml(response, status, html) {
+  response.writeHead(status, { ...HTML_HEADERS, "content-length": Buffer.byteLength(html) });
+  response.end(response.req?.method === "HEAD" ? undefined : html);
+}
+
 function numberParam(url, name) {
   const value = url.searchParams.get(name);
   return value === null || value === "" ? null : Number(value);
@@ -451,6 +1070,77 @@ async function handleRequest(request, response) {
   if (path === "/api/sync") {
     const result = await syncData();
     return jsonResponse(response, 200, result);
+  }
+  if (path === "/stats") {
+    return sendHtml(response, 200, await getStatsPage());
+  }
+  if (path === "/api/stats/search") {
+    const query = (url.searchParams.get("q") || "").trim().toLowerCase();
+    const matches = (value) => query === "" || String(value ?? "").toLowerCase().includes(query);
+    return jsonResponse(response, 200, {
+      routes: snapshot.routes
+        .filter((route) => matches(route.RouteNumber) || matches(route.RouteName))
+        .slice(0, 8)
+        .map((route) => ({
+          routeNumber: route.RouteNumber,
+          routeName: routeNameFor(route.RouteNumber),
+          mode: modeFromCategory(route.RouteCategory ?? null)
+        })),
+      vehicles: snapshot.vehicles
+        .filter((vehicle) => matches(vehicle.VehicleNumber) || matches(vehicle.VehicleName))
+        .slice(0, 8)
+        .map((vehicle) => ({
+          vehicleNumber: vehicle.VehicleNumber,
+          vehicleName: vehicle.VehicleName ?? null,
+          mode: modeFromCategory(vehicle.VehicleCategory ?? null)
+        }))
+    });
+  }
+  if (path === "/api/stats/export") {
+    const options = statsOptions(url);
+    const optionsError = statsOptionsError(options);
+    if (optionsError) return jsonResponse(response, 400, { error: optionsError });
+    const dataset = url.searchParams.get("dataset") || "routes";
+    if (!EXPORT_DATASETS.includes(dataset)) {
+      return jsonResponse(response, 400, { error: "Unbekannter Export-Datensatz." });
+    }
+    if (dataset === "delays") {
+      const { start } = statsWindow(options.allTime, options.minutes);
+      const { records } = statsRecords({ ...options, start });
+      const rows = records
+        .filter((record) => deviationOf(record) !== null)
+        .map((record) => [
+          record.timestamp,
+          record.vehicleNumber,
+          record.routeNumber ?? "",
+          MODE_LABELS[modeOfRecord(record)],
+          record.deviation,
+          record.source ?? ""
+        ]);
+      return sendCsv(response, "swu-statistik-messwerte.csv", DELAY_CSV_HEADER, rows);
+    }
+    const stats = computeStats(options);
+    if (dataset === "routes") {
+      const rows = stats.routes.map((route) => [
+        route.routeName,
+        MODE_LABELS[route.mode] ?? "",
+        ...statsCsvNumbers(route)
+      ]);
+      return sendCsv(response, "swu-statistik-linien.csv", ["Linie", "Verkehrsmittel", ...STATS_CSV_HEADER], rows);
+    }
+    const rows = stats.vehicles.map((vehicle) => [
+      vehicle.vehicleNumber,
+      vehicle.vehicleName ?? "",
+      MODE_LABELS[vehicle.mode] ?? "",
+      ...statsCsvNumbers(vehicle)
+    ]);
+    return sendCsv(response, "swu-statistik-fahrzeuge.csv", ["Fahrzeug", "Name", "Verkehrsmittel", ...STATS_CSV_HEADER], rows);
+  }
+  if (path === "/api/stats") {
+    const options = statsOptions(url);
+    const optionsError = statsOptionsError(options);
+    if (optionsError) return jsonResponse(response, 400, { error: optionsError });
+    return jsonResponse(response, 200, computeStats(options));
   }
   if (path === "/api/snapshot") {
     return sendBuffer(response, 200, cachedBody("snapshot", () => snapshot));
@@ -527,8 +1217,8 @@ async function handleRequest(request, response) {
       const record = records[i];
       if (vehicleNumber !== null && record.vehicleNumber !== vehicleNumber) continue;
       if (routeNumber !== null && record.routeNumber !== routeNumber) continue;
-      const deviation = Number(record.deviation);
-      if (!Number.isFinite(deviation)) continue;
+      const deviation = deviationOf(record);
+      if (deviation === null) continue;
       sum += deviation;
       samples++;
     }
