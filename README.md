@@ -49,6 +49,7 @@ Eine einmalige Synchronisierung ist mit `npm run sync` möglich.
 - `GET /api/stats?mode=bus` – nur Busse, `mode=tram` nur Straßenbahnen
 - `GET /api/stats/search?q=13` – Linien und Fahrzeuge für das Dashboard suchen
 - `GET /api/stats/export?dataset=routes` – CSV-Export der Linien; `dataset=vehicles` für Fahrzeuge, `dataset=delays` für die Messwerte
+- `GET /embed/map` – einbettbare interaktive Netzkarte (`?mode=tram|bus`, `?api=<Server-URL>`)
 
 ## Dashboard
 
@@ -61,8 +62,11 @@ Straßenbahnen und Busse lassen sich getrennt filtern und werden zusätzlich
 direkt gegenübergestellt. Eine Karte „Busse unterwegs“ zeigt für jeden Bus die
 nächsten Halte als Linienvorschau und eine Verspätungsprognose – aus den
 SWU-Livewerten je Haltestelle, sonst aus dem Trend der letzten 45 Minuten.
-Eine Netzkarte zeichnet Haltestellen und Linienverläufe aus dem GTFS-Fahrplan
-über OpenStreetMap-Kacheln; der Filter Straßenbahn/Bus wirkt auch auf die Karte.
+Eine interaktive Netzkarte zeichnet Haltestellen und Linienverläufe aus dem
+GTFS-Fahrplan über OpenStreetMap-Kacheln: Mausrad oder +/− zoomt, Ziehen
+verschiebt, ein Klick auf eine Haltestelle zeigt die nächsten Abfahrten, ein
+Klick auf eine Linie oder die Legende hebt deren Verlauf hervor. Der Filter
+Straßenbahn/Bus wirkt auch auf die Karte.
 Statistik und Messwerte stehen als CSV-Export zur Verfügung
 (Semikolon-getrennt, UTF-8 mit BOM für Excel).
 
@@ -73,6 +77,30 @@ $env:SWU_BASE_URL = "https://api.swu.de/mobility/v1"
 $env:PORT = "3000"
 npm start
 ```
+
+## Netzkarte einbetten
+
+`GET /embed/map` liefert dieselbe Karte als eigenständige Seite für iframes:
+
+```html
+<iframe src="https://swu.example.com/embed/map?mode=bus" width="100%" height="560"
+        style="border:0" title="SWU Netzkarte" loading="lazy"></iframe>
+```
+
+`mode=tram` bzw. `mode=bus` schränkt die Linien ein. Mit `api=https://…` lassen
+sich die Datenabfragen auf einen anderen Server richten, wenn nur die Seite
+kopiert wird; im iframe auf den Server selbst ist der Parameter nicht nötig.
+
+Für eigene Oberflächen stehen die Daten direkt bereit; alle `/api/…`-Antworten
+tragen `Access-Control-Allow-Origin: *`, `OPTIONS` wird beantwortet:
+
+- `GET /api/gtfs/map` – Haltestellen (`stopId`, `name`, `lat`, `lon`) und Linienverläufe (`line`, `mode`, `color`, `headsign`, `points`)
+- `GET /api/gtfs/departures?stopId=…&minutes=60` – nächste Abfahrten einer Haltestelle
+- `GET /api/gtfs/routes/<id>` – Linie mit Haltestellenfolge je Richtung
+
+Das Widget selbst liegt als ES-Modul unter `GET /network-map.js` und lässt sich
+mit `createNetworkMap({ container, apiBase, mode, fill })` in eigene Seiten
+einbauen.
 
 ## GTFS-Fahrplan
 

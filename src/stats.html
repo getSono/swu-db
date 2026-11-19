@@ -296,19 +296,6 @@
   .map-card { display: grid; gap: 12px; }
   .map-head { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; justify-content: space-between; }
   .map-head h2 { margin: 0; }
-  .map-frame {
-    position: relative;
-    overflow: hidden;
-    border: 1px solid hsl(var(--border));
-    border-radius: calc(var(--radius) - 0.25rem);
-    background: hsl(var(--muted));
-  }
-  .map-frame svg { display: block; width: 100%; height: auto; }
-  /* OSM-Kacheln sind hell; der Filter dunkelt sie für das dunkle Theme ab. */
-  .map-frame .tiles { filter: invert(1) hue-rotate(180deg) brightness(0.82) contrast(0.9) saturate(0.6); }
-  .map-frame .network-line { fill: none; stroke-linecap: round; stroke-linejoin: round; opacity: 0.9; }
-  .map-frame .network-stop { fill: hsl(var(--foreground)); opacity: 0.6; }
-  .map-frame .empty { margin: 0; padding: 18px; color: hsl(var(--muted-foreground)); font-size: 0.8125rem; }
   .map-attribution { margin: 0; color: hsl(var(--muted-foreground)); font-size: 0.6875rem; }
   .map-attribution a { color: inherit; }
   .details {
@@ -582,7 +569,7 @@
       <h2>Netzkarte aus dem Fahrplan</h2>
       <span class="muted" id="map-meta"></span>
     </div>
-    <div id="map" class="map-frame"></div>
+    <div id="map"></div>
     <p class="map-attribution">Hintergrund: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap-Mitwirkende</a> · Linien und Haltestellen aus dem GTFS-Fahrplan</p>
   </section>
   <section id="bus-card" class="card bus-card" hidden>
@@ -601,11 +588,13 @@
   </section>
   <section id="details" class="details" hidden></section>
 </main>
-<script>
+<script type="module">
+import { createNetworkMap } from "/network-map.js";
+
 (function () {
   "use strict";
 
-  var state = { minutes: 180, mode: "all", scope: null, openBus: null, busData: null, gtfsMap: null };
+  var state = { minutes: 180, mode: "all", scope: null, openBus: null, busData: null };
   var MODE_LABELS = { tram: "Straßenbahn", bus: "Bus", other: "Unbekannt" };
   var numberFormat = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 });
 
@@ -1106,121 +1095,17 @@
     }).join("");
   }
 
-  // --- Netzkarte aus dem GTFS-Fahrplan -------------------------------------
-  var MAP_WIDTH = 1100;
-  var MAP_HEIGHT = 560;
-  var MAP_PADDING = 40;
-  var TILE_SIZE = 256;
+  // Netzkarte: eigenes Widget aus /network-map.js, damit Dashboard und
+  // /embed/map dieselbe Karte nutzen.
+  var networkMap = null;
 
-  // Web-Mercator in normierten Weltkoordinaten (0..1).
-  function worldX(lon) {
-    return (lon + 180) / 360;
-  }
-
-  function worldY(lat) {
-    var radians = (lat * Math.PI) / 180;
-    return (1 - Math.log(Math.tan(radians) + 1 / Math.cos(radians)) / Math.PI) / 2;
-  }
-
-  // Maßstab (Weltbreite in Pixeln), bei dem das Netz samt Rand in die Karte passt.
-  function mapScale(bounds) {
-    var spanX = worldX(bounds.maxLon) - worldX(bounds.minLon);
-    var spanY = worldY(bounds.minLat) - worldY(bounds.maxLat);
-    return Math.min(
-      (MAP_WIDTH - MAP_PADDING * 2) / spanX,
-      (MAP_HEIGHT - MAP_PADDING * 2) / spanY
-    );
-  }
-
-  function renderMap() {
-    var data = state.gtfsMap;
-    if (!data || !data.lines || !data.lines.length) return;
-    var lines = data.lines.filter(function (line) {
-      return state.mode === "all" || line.mode === state.mode;
-    });
-    dom.mapCard.hidden = false;
-    if (!lines.length) {
-      dom.mapMeta.textContent = "";
-      dom.map.innerHTML = emptyState("Keine Linien für diesen Filter im Fahrplan.");
+  function showMap() {
+    if (networkMap) {
+      networkMap.setMode(state.mode);
       return;
     }
-    var bounds = { minLat: Infinity, maxLat: -Infinity, minLon: Infinity, maxLon: -Infinity };
-    lines.forEach(function (line) {
-      line.points.forEach(function (point) {
-        bounds.minLat = Math.min(bounds.minLat, point[0]);
-        bounds.maxLat = Math.max(bounds.maxLat, point[0]);
-        bounds.minLon = Math.min(bounds.minLon, point[1]);
-        bounds.maxLon = Math.max(bounds.maxLon, point[1]);
-      });
-    });
-    var scale = mapScale(bounds);
-    var originX = ((worldX(bounds.minLon) + worldX(bounds.maxLon)) / 2) * scale - MAP_WIDTH / 2;
-    var originY = ((worldY(bounds.minLat) + worldY(bounds.maxLat)) / 2) * scale - MAP_HEIGHT / 2;
-
-    function project(lat, lon) {
-      return [worldX(lon) * scale - originX, worldY(lat) * scale - originY];
-    }
-
-    // Statische Karte: fester Ausschnitt, keine Verschiebe- oder Zoomsteuerung.
-    // Die Kacheln liegen auf der nächstkleineren ganzzahligen Zoomstufe und
-    // werden auf den Kartenmaßstab skaliert.
-    var tileZoom = Math.max(1, Math.min(19, Math.floor(Math.log(scale / TILE_SIZE) / Math.LN2)));
-    var tileSize = scale / Math.pow(2, tileZoom);
-    var maxTile = Math.pow(2, tileZoom) - 1;
-    var tiles = "";
-    for (var x = Math.floor(originX / tileSize); x <= Math.floor((originX + MAP_WIDTH) / tileSize); x++) {
-      for (var y = Math.floor(originY / tileSize); y <= Math.floor((originY + MAP_HEIGHT) / tileSize); y++) {
-        if (x < 0 || y < 0 || x > maxTile || y > maxTile) continue;
-        tiles += '<image href="https://tile.openstreetmap.org/' + tileZoom + "/" + x + "/" + y + '.png" x="' +
-          (x * tileSize - originX).toFixed(1) + '" y="' + (y * tileSize - originY).toFixed(1) +
-          '" width="' + tileSize.toFixed(1) + '" height="' + tileSize.toFixed(1) + '"/>';
-      }
-    }
-
-    var strokes = lines.map(function (line) {
-      var points = line.points.map(function (point) {
-        var projected = project(point[0], point[1]);
-        return projected[0].toFixed(1) + "," + projected[1].toFixed(1);
-      }).join(" ");
-      var color = line.color || (line.mode === "tram" ? "#60a5fa" : "#34d399");
-      var title = "Linie " + line.line + (line.headsign ? " Richtung " + line.headsign : "");
-      return '<polyline class="network-line" points="' + points + '" stroke="' + esc(color) + '" stroke-width="' +
-        (line.mode === "tram" ? 2.4 : 1.8) + '"><title>' + esc(title) + "</title></polyline>";
-    }).join("");
-
-    // Nur Haltestellen der sichtbaren Linien zeichnen.
-    var visibleStops = {};
-    lines.forEach(function (line) {
-      line.points.forEach(function (point) { visibleStops[point[0] + "," + point[1]] = true; });
-    });
-    var dots = "";
-    var drawnStops = 0;
-    data.stops.forEach(function (stop) {
-      if (!visibleStops[stop.lat + "," + stop.lon]) return;
-      var projected = project(stop.lat, stop.lon);
-      if (projected[0] < 0 || projected[1] < 0 || projected[0] > MAP_WIDTH || projected[1] > MAP_HEIGHT) return;
-      dots += '<circle class="network-stop" cx="' + projected[0].toFixed(1) + '" cy="' + projected[1].toFixed(1) +
-        '" r="2.3"><title>' + esc(stop.name) + "</title></circle>";
-      drawnStops++;
-    });
-
-    dom.mapMeta.textContent = numberFormat.format(lines.length) + " Linienverläufe · " +
-      numberFormat.format(drawnStops) + " Haltestellen · Stand " + timeLabel(data.loadedAt) + " Uhr";
-    dom.map.innerHTML = '<svg viewBox="0 0 ' + MAP_WIDTH + " " + MAP_HEIGHT + '" role="img" aria-label="Netzkarte aus dem GTFS-Fahrplan">' +
-      '<g class="tiles">' + tiles + "</g>" +
-      '<g class="network">' + strokes + "</g>" +
-      '<g class="stops">' + dots + "</g></svg>";
-  }
-
-  async function loadMap() {
-    try {
-      var response = await fetch("/api/gtfs/map", { cache: "no-store" });
-      if (!response.ok) throw new Error("HTTP " + response.status);
-      state.gtfsMap = await response.json();
-      renderMap();
-    } catch (error) {
-      dom.mapCard.hidden = true;
-    }
+    dom.mapCard.hidden = false;
+    networkMap = createNetworkMap({ container: dom.map, meta: dom.mapMeta, mode: state.mode });
   }
 
   function render(data) {
@@ -1236,7 +1121,6 @@
     renderRank(data);
     renderBuses(data.buses);
     renderDetails(data);
-    renderMap();
   }
 
   function showError(message) {
@@ -1433,6 +1317,7 @@
       other.setAttribute("aria-pressed", String(other === button));
     });
     load();
+    showMap();
   });
 
   function exportDataset() {
@@ -1461,7 +1346,7 @@
   dom.exportDelays.addEventListener("click", function () { download(exportUrl("delays")); });
 
   load();
-  loadMap();
+  showMap();
   setInterval(function () { load(); }, 60000);
 })();
 </script>

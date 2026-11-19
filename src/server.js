@@ -12,6 +12,8 @@ const SNAPSHOT_FILE = join(DATA_DIR, "latest.json");
 const HISTORY_FILE = join(DATA_DIR, "delay-history.jsonl");
 const PACKAGE_FILE = join(ROOT, "package.json");
 const STATS_PAGE_FILE = join(ROOT, "src", "stats.html");
+const MAP_SCRIPT_FILE = join(ROOT, "src", "network-map.js");
+const EMBED_PAGE_FILE = join(ROOT, "src", "embed.html");
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_BASE_URL = configuredBaseUrl(process.env.PUBLIC_BASE_URL);
@@ -42,6 +44,8 @@ let snapshot = EMPTY_SNAPSHOT;
 let syncInProgress = false;
 let packageVersion = null;
 let statsPage = null;
+let mapScript = null;
+let embedPage = null;
 // Fahrplandaten aus dem GTFS-Feed; null, solange sie noch nicht geladen sind.
 let gtfs = null;
 let gtfsLoading = null;
@@ -91,7 +95,8 @@ const apiRoutes = [
   { method: "GET", path: "/api/stats", description: "Liefert Netzstatistiken mit Verteilung, Zeitverlauf sowie Bussen inklusive Linienvorschau und Prognose; optional für routeNumber, vehicleNumber, mode und minutes=all." },
   { method: "GET", path: "/api/stats/search?q=13", description: "Sucht Linien und Fahrzeuge für das Statistik-Dashboard." },
   { method: "GET", path: "/api/stats/export?dataset=routes", description: "Exportiert Linien-, Fahrzeug- oder Messwertstatistiken als CSV." },
-  { method: "GET", path: "/stats", description: "HTML-Dashboard mit Diagrammen zum gesamten Netz sowie zu einzelnen Linien und Fahrzeugen." }
+  { method: "GET", path: "/stats", description: "HTML-Dashboard mit Diagrammen zum gesamten Netz sowie zu einzelnen Linien und Fahrzeugen." },
+  { method: "GET", path: "/embed/map", description: "Einbettbare interaktive Netzkarte für iframes; optional mode=tram|bus und api=<Server-URL>." }
 ];
 
 async function getPackageVersion() {
@@ -1016,6 +1021,16 @@ async function getStatsPage() {
   return statsPage;
 }
 
+async function getMapScript() {
+  if (mapScript === null) mapScript = await readFile(MAP_SCRIPT_FILE, "utf8");
+  return mapScript;
+}
+
+async function getEmbedPage() {
+  if (embedPage === null) embedPage = await readFile(EMBED_PAGE_FILE, "utf8");
+  return embedPage;
+}
+
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
@@ -1083,6 +1098,18 @@ function boundedNumber(url, name, fallback, min, max) {
 }
 
 async function handleRequest(request, response) {
+  // Die API ist öffentlich und read-only: andere Projekte dürfen sie direkt
+  // aus dem Browser einbinden (Karte, Daten, Exporte).
+  response.setHeader("access-control-allow-origin", "*");
+  if (request.method === "OPTIONS") {
+    response.writeHead(204, {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET, HEAD",
+      "access-control-allow-headers": "*",
+      "access-control-max-age": "86400"
+    });
+    return response.end();
+  }
   if (request.method !== "GET" && request.method !== "HEAD") {
     response.setHeader("allow", "GET, HEAD");
     return jsonResponse(response, 405, { error: "Nur GET und HEAD werden unterstützt." });
@@ -1127,6 +1154,18 @@ async function handleRequest(request, response) {
   }
   if (path === "/stats") {
     return sendHtml(response, 200, await getStatsPage());
+  }
+  if (path === "/network-map.js") {
+    const script = await getMapScript();
+    response.writeHead(200, {
+      "content-type": "text/javascript; charset=utf-8",
+      "cache-control": "no-cache",
+      "content-length": Buffer.byteLength(script)
+    });
+    return response.end(request.method === "HEAD" ? undefined : script);
+  }
+  if (path === "/embed/map") {
+    return sendHtml(response, 200, await getEmbedPage());
   }
   if (path === "/api/stats/search") {
     const query = (url.searchParams.get("q") || "").trim().toLowerCase();
